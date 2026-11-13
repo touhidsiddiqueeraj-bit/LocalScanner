@@ -33,7 +33,8 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
 
       - name: Run screenshot tests
-        run: ./gradlew :app:testDebugUnitTest --tests "com.localscanner.app.AppScreenshots" --stacktrace
+        # --rerun forces execution: up-to-date/cached runs would skip PNG writing
+        run: ./gradlew :app:testDebugUnitTest --tests "com.localscanner.app.AppScreenshots" --rerun --stacktrace
 
       - name: Collect and commit screenshots
         run: |
