@@ -29,7 +29,10 @@ class DocDetailViewModel(
 
     private val container = (app as LocalScannerApp).container
     private val repo = container.repository
-    private val ocrEngine = container.ocr
+
+    // Accessed lazily: OCR engines own JNI objects and must not be created
+    // until a bulk OCR run actually needs them (keeps JVM tests clean).
+    private val ocrEngine: com.localscanner.app.domain.OcrEngine get() = container.ocr
 
     val doc: StateFlow<DocumentEntity?> = repo.observeDoc(docId)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)

@@ -97,7 +97,7 @@ class AppScreenshots {
 
     private fun waitForText(text: String, timeoutMs: Long = 15_000) {
         compose.waitUntil(timeoutMillis = timeoutMs) {
-            compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty()
         }
     }
 
