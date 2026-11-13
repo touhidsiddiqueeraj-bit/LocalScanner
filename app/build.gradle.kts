@@ -150,6 +150,9 @@ dependencies {
 tasks.withType<Test>().configureEach {
     // Robolectric + Compose rendering needs more than the default 512m heap.
     maxHeapSize = "1792m"
+    // captureRoboImage() writes PNGs when recording is enabled (the Roborazzi
+    // Gradle plugin normally toggles this; we run without the plugin).
+    systemProperty("roborazzi.record.enable", "true")
     // Allow a pre-warmed android-all jar cache (set ROBOLECTRIC_CACHE_DIR locally).
     System.getenv("ROBOLECTRIC_CACHE_DIR")?.let {
         systemProperty("robolectric.dependency.cache.dir", it)
