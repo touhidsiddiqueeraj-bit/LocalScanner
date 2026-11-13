@@ -153,6 +153,9 @@ tasks.withType<Test>().configureEach {
     // captureRoboImage() writes PNGs when recording is enabled (the Roborazzi
     // Gradle plugin normally toggles this; we run without the plugin).
     systemProperty("roborazzi.record.enable", "true")
+    // Declare the screenshot folder as an output so cached/up-to-date runs
+    // still deliver the PNGs (they are restored from the build cache).
+    outputs.dir(project.file("src/test/screenshots"))
     // Allow a pre-warmed android-all jar cache (set ROBOLECTRIC_CACHE_DIR locally).
     System.getenv("ROBOLECTRIC_CACHE_DIR")?.let {
         systemProperty("robolectric.dependency.cache.dir", it)

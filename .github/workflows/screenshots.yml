@@ -51,7 +51,8 @@ jobs:
           git status --porcelain | head -20
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f docs/screenshots
+          git check-ignore -v docs/screenshots/*.png || echo "(not ignored)"
+          git add -fv docs/screenshots 2>&1 | head -20
           echo "staged:"
           git diff --cached --stat | head -15
           if [ -n "$(git diff --cached --name-only)" ]; then
