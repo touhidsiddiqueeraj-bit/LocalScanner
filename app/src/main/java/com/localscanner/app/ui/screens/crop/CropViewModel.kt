@@ -34,8 +34,8 @@ class CropViewModel(app: Application) : AndroidViewModel(app) {
     var message: String? by mutableStateOf(null)
         private set
 
-    /** Where the current quad came from: FULL (fallback), HINT (live view), DETECTED. */
-    enum class QuadSource { FULL, HINT, DETECTED }
+    /** Where the current quad came from: FULL (fallback), HINT (live view), DETECTED, INSET (safe default). */
+    enum class QuadSource { FULL, HINT, DETECTED, INSET }
 
     var quadSource: QuadSource by mutableStateOf(QuadSource.FULL)
         private set
@@ -86,10 +86,12 @@ class CropViewModel(app: Application) : AndroidViewModel(app) {
                 busy = false
                 return@launch
             }
-            val bmp = withContext(Dispatchers.IO) { ImageFiles.decodeScaled(file.absolutePath, 1400) }
+            val bmp = withContext(Dispatchers.IO) { ImageFiles.decodeScaled(file.absolutePath, 2000) }
             bitmap = bmp
             val detected = bmp?.let { aspect ->
-                withContext(Dispatchers.Default) { ScannerVision.detectQuad(aspect, 1000) }
+                withContext(Dispatchers.Default) {
+                    ScannerVision.detectQuad(aspect, 1000)?.let { ScannerVision.refineQuad(aspect, it) }
+                }
             }
             val hint = session.rawHints.getOrNull(index)
             when {
@@ -103,15 +105,23 @@ class CropViewModel(app: Application) : AndroidViewModel(app) {
                     quad = hint.quad
                     quadSource = QuadSource.HINT
                 }
-                else -> {
+                bmp != null && withContext(Dispatchers.Default) { ScannerVision.looksPaperFilled(bmp) } -> {
+                    // Nothing detected, but the frame is already paper: the
+                    // full page IS the correct selection.
                     quad = QuadF.fullFrame()
                     quadSource = QuadSource.FULL
+                }
+                else -> {
+                    // Never silently select the whole frame: start from an
+                    // obvious inset rectangle the user can drag.
+                    quad = QuadF.insetFrame(FALLBACK_INSET)
+                    quadSource = QuadSource.INSET
                 }
             }
             busy = false
             // Auto-crop like CamScanner: in the single-shot flow a confident
             // quad is applied immediately without a manual "Crop" tap.
-            if (isSingleShotFlow && quadSource != QuadSource.FULL) {
+            if (isSingleShotFlow && (quadSource == QuadSource.DETECTED || quadSource == QuadSource.HINT)) {
                 autoCropPending = true
             }
         }
@@ -177,7 +187,9 @@ class CropViewModel(app: Application) : AndroidViewModel(app) {
                 if (bmp == null) {
                     session.addWarped(file)
                 } else {
-                    val detected = withContext(Dispatchers.Default) { ScannerVision.detectQuad(bmp, 1000) }
+                    val detected = withContext(Dispatchers.Default) {
+                        ScannerVision.detectQuad(bmp, 1000)?.let { ScannerVision.refineQuad(bmp, it) }
+                    }
                     val warped = detected?.let {
                         withContext(Dispatchers.Default) { ScannerVision.warpPerspective(bmp, it, 2048) }
                     }
@@ -229,12 +241,23 @@ class CropViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val bmp = bitmap ?: return@launch
             autoCropPending = false
-            quad = withContext(Dispatchers.Default) {
-                ScannerVision.detectQuad(bmp, 1000) ?: QuadF.fullFrame().also {
+            val detected = withContext(Dispatchers.Default) {
+                ScannerVision.detectQuad(bmp, 1000)?.let { ScannerVision.refineQuad(bmp, it) }
+            }
+            when {
+                detected != null -> {
+                    quad = detected
+                    quadSource = QuadSource.DETECTED
+                }
+                withContext(Dispatchers.Default) { ScannerVision.looksPaperFilled(bmp) } -> {
+                    quad = QuadF.fullFrame()
                     quadSource = QuadSource.FULL
                 }
+                else -> {
+                    quad = QuadF.insetFrame(FALLBACK_INSET)
+                    quadSource = QuadSource.INSET
+                }
             }
-            if (quad != QuadF.fullFrame()) quadSource = QuadSource.DETECTED
         }
     }
 
@@ -262,5 +285,10 @@ class CropViewModel(app: Application) : AndroidViewModel(app) {
 
     fun dismissMessage() {
         message = null
+    }
+
+    companion object {
+        /** Margin of the default selection rectangle when detection fails. */
+        const val FALLBACK_INSET = 0.08f
     }
 }

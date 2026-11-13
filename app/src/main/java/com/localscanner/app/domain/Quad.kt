@@ -39,9 +39,7 @@ data class QuadF(
         val p = points()
         var sum = 0f
         for (i in p.indices) {
-            val a = p[i]
-            val b = p[(i + 1) % p.size]
-            sum += dist(a, b)
+            sum += dist(p[i], p[(i + 1) % p.size])
         }
         return sum
     }
@@ -50,6 +48,50 @@ data class QuadF(
         val dx = a.x - b.x
         val dy = a.y - b.y
         return Math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
+    }
+
+    /**
+     * Strict convexity check: every turn must keep the same winding sign.
+     * Self-intersecting ("bowtie") or collinear quads fail.
+     */
+    fun isConvex(): Boolean {
+        val p = points()
+        var sign = 0
+        for (i in p.indices) {
+            val a = p[i]
+            val b = p[(i + 1) % p.size]
+            val c = p[(i + 2) % p.size]
+            val cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x)
+            if (Math.abs(cross) < 1e-6f) return false
+            val s = if (cross > 0f) 1 else -1
+            if (sign == 0) sign = s else if (s != sign) return false
+        }
+        return true
+    }
+
+    /**
+     * Largest |cos| of the four interior angles: ~0 for right angles, ~1 for
+     * degenerate/sharp corners. Used to reject razor-thin "quads" that are
+     * clearly not documents.
+     */
+    fun maxAngleCos(): Float {
+        val p = points()
+        var m = 0f
+        for (i in 0 until p.size) {
+            val prev = p[(i + p.size - 1) % p.size]
+            val v = p[i]
+            val next = p[(i + 1) % p.size]
+            val v1x = prev.x - v.x
+            val v1y = prev.y - v.y
+            val v2x = next.x - v.x
+            val v2y = next.y - v.y
+            val d1 = Math.sqrt((v1x * v1x + v1y * v1y).toDouble()).toFloat()
+            val d2 = Math.sqrt((v2x * v2x + v2y * v2y).toDouble()).toFloat()
+            if (d1 <= 1e-6f || d2 <= 1e-6f) return 1f
+            val cos = (v1x * v2x + v1y * v2y) / (d1 * d2)
+            if (Math.abs(cos) > m) m = Math.abs(cos)
+        }
+        return m
     }
 
     /**
@@ -80,7 +122,39 @@ data class QuadF(
             return QuadF(tl, tr, br, bl)
         }
 
+        /**
+         * Builds a quad from an approximated contour polygon.
+         * Handles the classic "bent corner" failure: when approxPolyDP yields
+         * 5 points (curled paper corner), every 4-point subset is tried and
+         * the largest convex quad wins - removing the folded vertex produces
+         * the biggest clean rectangle.
+         */
+        fun fromPolygon(points: List<Pt>): QuadF? = when (points.size) {
+            4 -> ordered(points)
+            5 -> {
+                var best: QuadF? = null
+                for (i in points.indices) {
+                    val subset = points.filterIndexed { idx, _ -> idx != i }
+                    val q = ordered(subset) ?: continue
+                    if (!q.isConvex()) continue
+                    if (best == null || q.area() > best.area()) best = q
+                }
+                best
+            }
+            else -> null
+        }
+
         fun fullFrame(): QuadF = QuadF(Pt(0f, 0f), Pt(1f, 0f), Pt(1f, 1f), Pt(0f, 1f))
+
+        /**
+         * Default selection rectangle inset by [margin] on every side, used
+         * when automatic detection fails (never silently select the whole
+         * frame - the user gets an obvious starting point to adjust).
+         */
+        fun insetFrame(margin: Float): QuadF {
+            val m = margin.coerceIn(0f, 0.45f)
+            return QuadF(Pt(m, m), Pt(1f - m, m), Pt(1f - m, 1f - m), Pt(m, 1f - m))
+        }
 
         /** Distance between quad centroids - used for capture stability. */
         fun centroidDistance(a: QuadF, b: QuadF): Float {
@@ -89,6 +163,52 @@ data class QuadF(
             val dx = ca.x - cb.x
             val dy = ca.y - cb.y
             return Math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
+        }
+    }
+}
+
+/**
+ * Infinite line represented by a point and a direction, with a
+ * total-least-squares fit through a point cloud. Used by the gradient
+ * edge-snap refinement to intersect refined edges into precise corners.
+ */
+data class LineF(val px: Float, val py: Float, val dx: Float, val dy: Float) {
+
+    /** Intersection with [other]; null when near-parallel. */
+    fun intersect(other: LineF): Pt? {
+        val denom = dx * other.dy - dy * other.dx
+        if (Math.abs(denom) < 1e-9f) return null
+        val t = ((other.px - px) * other.dy - (other.py - py) * other.dx) / denom
+        return Pt(px + t * dx, py + t * dy)
+    }
+
+    companion object {
+        /**
+         * Total-least-squares line through [points]: the line direction is
+         * the principal eigenvector of the covariance matrix.
+         */
+        fun fit(points: List<Pt>): LineF? {
+            if (points.size < 2) return null
+            val n = points.size
+            val cx = points.sumOf { it.x.toDouble() } / n
+            val cy = points.sumOf { it.y.toDouble() } / n
+            var sxx = 0.0
+            var syy = 0.0
+            var sxy = 0.0
+            for (p in points) {
+                val dx = p.x - cx
+                val dy = p.y - cy
+                sxx += dx * dx
+                syy += dy * dy
+                sxy += dx * dy
+            }
+            val theta = 0.5 * Math.atan2(2.0 * sxy, sxx - syy)
+            return LineF(
+                cx.toFloat(),
+                cy.toFloat(),
+                Math.cos(theta).toFloat(),
+                Math.sin(theta).toFloat(),
+            )
         }
     }
 }

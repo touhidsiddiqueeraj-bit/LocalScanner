@@ -10,7 +10,6 @@ import org.opencv.core.MatOfInt
 import org.opencv.core.MatOfPoint
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.Point
-import org.opencv.core.Rect
 import org.opencv.core.Scalar
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
@@ -22,88 +21,136 @@ import kotlin.math.sqrt
  * OpenCV-powered document scanning pipeline replicating CamScanner's local
  * vision stack: live edge detection, perspective correction ("auto-crop and
  * straighten") and the enhancement filters (Magic Color, Grayscale, B&W).
+ *
+ * The edge-detection stage merges the consensus of the battle-tested
+ * open-source scanners (LiveEdgeDetection lineage, Scanbot's reference
+ * pipeline, makeacopy) with cluttered-scene sources proven against real
+ * desk photos:
+ *
+ *  1. Candidate quads from five independent sources, because any single one
+ *     fails on some scenes:
+ *       - "paper flatten": normalize -> THRESH_TRUNC 150 -> normalize ->
+ *         Canny(200, 75) -> morphological close 10x10 (LiveEdgeDetection
+ *         lineage; white paper on textured/darker desks). Only runs when the
+ *         scene actually has a dark background (10th-percentile luminance
+ *         <= 140) - on uniformly bright frames THRESH_TRUNC clamps
+ *         everything and the renormalize amplifies noise into chaos;
+ *       - "otsu": Otsu binarization -> Canny(50, 150) -> close 5x5 (Scanbot's
+ *         reference pipeline; low-contrast backgrounds);
+ *       - "otsu blobs": the Otsu binary at two close/open scales - the
+ *         classic largest-bright-blob source, separating paper from slightly
+ *         darker/coloured backgrounds even when Canny sees only faint edges;
+ *       - "mask blobs": bright low-saturation paper mask (HSV) at three
+ *         close/open scales - separates paper from white clutter;
+ *       - "flood": the paper mask flooded with long structural Canny
+ *         components (>= 35% frame diagonal) as barriers, splitting paper
+ *         from clutter that touches it (keyboard, tiles). The HSV sources
+ *         only run when the mask actually separates something (8-65% frame
+ *         coverage) - on white-on-white scenes the mask covers everything
+ *         and its blobs would span the whole frame.
+ *  2. For every source contour: convex hull -> approxPolyDP (escalating
+ *     epsilon, 4- or 5-point quads with curled-corner recovery) plus the
+ *     extreme sum/difference points (robust for curved page blobs).
+ *  3. Validation: area 4-97% of the frame, strictly convex, no interior
+ *     angle sharper than ~60 degrees, quad fills >= 65% of its contour,
+ *     at most 2 corners touching the frame border.
+ *  4. Highest score wins (area + fill - border-touch - sharp-angle); null
+ *     when nothing document-like is found, so callers decide the fallback.
  */
 object ScannerVision {
 
-    /** Minimum share of image area a plausible document quad must cover. */
-    private const val MIN_QUAD_AREA = 0.08f
+    /** Minimum share of the image the document quad must cover. */
+    private const val MIN_AREA_FRACTION = 0.04f
 
-    /** Score/geometry thresholds validated against real desk photos. */
-    private const val MIN_SCORED_AREA = 0.10
-    private const val MAX_SCORED_AREA = 0.96
-    private const val FRAME_TOUCH_TOL = 0.012
-    private const val MIN_EDGE_SUPPORT = 0.30
+    /** Above this the "quad" is suspiciously the whole frame. */
+    private const val MAX_AREA_FRACTION = 0.97f
+
+    /** Quads whose corners nearly all sit on the frame border are artifacts. */
+    private const val MAX_BORDER_TOUCHES = 2
+
+    /** How well the approximated quad must fill its source contour. */
+    private const val MIN_FILL_RATIO = 0.65f
+
+    /** Reject quads with an interior angle sharper than ~60 degrees. */
+    private const val MAX_SHARP_ANGLE_COS = 0.5f
+
+    /** Source contours smaller than this share of the frame are noise. */
+    private const val MIN_SOURCE_AREA = 0.04
+
+    /** Long structural Canny components (flood barriers) threshold. */
     private const val LONG_EDGE_DIAG = 0.35
+
+    /** Below 8% mask coverage the HSV sources find nothing; above 65% they span the frame. */
+    private const val MASK_COVERAGE_MIN = 0.08
+
+    /** @see MASK_COVERAGE_MIN */
+    private const val MASK_COVERAGE_MAX = 0.65
+
+    /** Strategy A only helps when a real dark background exists. */
+    private const val DARK_BACKGROUND_P10 = 140.0
 
     /**
      * Detects the dominant document quad in the bitmap.
-     * Returns a quad in normalized [0..1] coordinates, or null.
-     *
-     * Cluttered-scene strategy (validated against real photos of paper on a
-     * wooden desk next to a white keyboard and bright floor tiles):
-     *
-     *  1. Candidate quads from four independent sources, because any single
-     *     one fails on some scenes:
-     *       - "flood": bright low-saturation paper mask split by LONG Canny
-     *         components (bbox diagonal >= 35% of the frame). Long components
-     *         are object boundaries (page edges, keyboard frame); short ones
-     *         are text/table detail. Flooding the mask with those edges as
-     *         barriers separates paper from white clutter that touches it.
-     *       - mask blobs at three morphological close scales.
-     *       - Canny contours under adaptive + fixed threshold sets.
-     *     Corners come from multi-epsilon approxPolyDP AND from the extreme
-     *     sum/difference points (robust for curved page blobs).
-     *  2. Document-likelihood scoring: area share, contour fill, how many
-     *     corners hug the frame, centrality and - decisively - edge support:
-     *     a real document's four sides must sit on actual image edges, which
-     *     rejects the frame-spanning mega-contours that plague busy photos.
-     *  3. Highest score wins; null when nothing document-like is found.
+     * Returns a quad in normalized [0..1] coordinates, or null when nothing
+     * document-like was found (callers decide the fallback, not this method).
      */
     fun detectQuad(src: Bitmap, maxDim: Int = 448): QuadF? {
         val scale = min(1f, maxDim.toFloat() / max(src.width, src.height).toFloat())
-        val w = max(32, (src.width * scale).toInt())
-        val h = max(32, (src.height * scale).toInt())
+        val w = max(64, (src.width * scale).toInt())
+        val h = max(64, (src.height * scale).toInt())
         val scaled = if (scale < 1f) Bitmap.createScaledBitmap(src, w, h, true) else src
 
         val rgba = Mat()
         val gray = Mat()
+        val blurred = Mat()
         val bgr = Mat()
         val hsv = Mat()
-        val mask = Mat()
-        val struct = Mat()
-        val emap = Mat()
-        val candidates = mutableListOf<Candidate>()
+        val paperMask = Mat()
+        val structural = Mat()
+        val otsuBinary = Mat()
+        val edges = Mat()
         return try {
             Utils.bitmapToMat(scaled, rgba)
             Imgproc.cvtColor(rgba, gray, Imgproc.COLOR_RGBA2GRAY)
-            Imgproc.GaussianBlur(gray, gray, Size(5.0, 5.0), 0.0)
+            Imgproc.GaussianBlur(gray, blurred, Size(5.0, 5.0), 0.0)
             Imgproc.cvtColor(rgba, bgr, Imgproc.COLOR_RGBA2BGR)
             Imgproc.cvtColor(bgr, hsv, Imgproc.COLOR_BGR2HSV)
             // Paper-ish mask: low saturation (white/grey paper) + bright.
             // inRange is inclusive; matches S in [0,69] and V in [141,255].
-            Core.inRange(hsv, Scalar(0.0, 0.0, 141.0), Scalar(180.0, 69.0, 255.0), mask)
-
-            val dim = max(w, h).toFloat()
-            structuralEdges(gray, dim, struct)
-            Imgproc.Canny(gray, emap, 30.0, 90.0)
-            val emapKer = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(7.0, 7.0))
-            try {
-                Imgproc.dilate(emap, emap, emapKer)
-            } finally {
-                emapKer.release()
-            }
+            Core.inRange(hsv, Scalar(0.0, 0.0, 141.0), Scalar(180.0, 69.0, 255.0), paperMask)
 
             val imgArea = w.toDouble() * h.toDouble()
-            floodCandidates(mask, struct, imgArea, w, h, candidates)
-            maskBlobCandidates(mask, imgArea, w, h, candidates)
-            cannyCandidates(gray, imgArea, w, h, candidates)
+            val candidates = mutableListOf<QuadCandidate>()
+
+            // Source A: bright-paper flattening then Canny (LiveEdge lineage).
+            // Guarded: without a real dark background THRESH_TRUNC clamps the
+            // whole frame and the renormalize turns noise into chaos.
+            if (percentile(gray, 10.0) <= DARK_BACKGROUND_P10) {
+                edgesFromPaperStrategy(blurred, edges)
+                collectFromEdges(edges, w, h, imgArea, candidates)
+            }
+
+            // Source B + B2: Otsu binarization - Canny edges (Scanbot) and
+            // bright-blob quads at two close/open scales.
+            edgesFromOtsuStrategy(blurred, otsuBinary, edges)
+            collectFromEdges(edges, w, h, imgArea, candidates)
+            otsuBlobQuads(otsuBinary, w, h, imgArea, candidates)
+
+            // Sources D + E (HSV mask blobs / flood): only when the mask
+            // actually separates paper from its surroundings.
+            val maskCoverage = Core.countNonZero(paperMask).toDouble() / imgArea
+            if (maskCoverage in MASK_COVERAGE_MIN..MASK_COVERAGE_MAX) {
+                maskBlobQuads(paperMask, w, h, imgArea, candidates)
+                structuralEdges(gray, max(w, h).toFloat(), structural)
+                floodQuads(paperMask, structural, w, h, imgArea, candidates)
+            }
 
             var best: QuadF? = null
-            var bestScore = 0.0
+            var bestScore = Float.NEGATIVE_INFINITY
             for (c in candidates) {
-                val sc = scoreQuad(c.quad, c.area, emap)
-                if (sc > bestScore) {
-                    bestScore = sc
+                val score = c.score()
+                if (score > bestScore) {
+                    bestScore = score
                     best = c.quad
                 }
             }
@@ -113,17 +160,211 @@ object ScannerVision {
         } finally {
             rgba.release()
             gray.release()
+            blurred.release()
             bgr.release()
             hsv.release()
-            mask.release()
-            struct.release()
-            emap.release()
+            paperMask.release()
+            structural.release()
+            otsuBinary.release()
+            edges.release()
             if (scaled !== src) scaled.recycle()
         }
     }
 
-    /** One candidate quad with the area of the contour it came from. */
-    private class Candidate(val quad: QuadF, val area: Double)
+    /**
+     * Snaps quad edges to nearby strong gradients on the full-resolution
+     * bitmap (makeacopy-style edge refinement, simplified). Each edge is
+     * sampled along its length, the strongest nearby gradient within a small
+     * search window wins, refined samples are least-squares fitted and the
+     * fitted lines are intersected into precise corners. Strict guards revert
+     * to the input quad whenever refinement would degrade it.
+     */
+    fun refineQuad(src: Bitmap, quad: QuadF): QuadF {
+        val w = src.width
+        val h = src.height
+        if (w < 64 || h < 64) return quad
+        val rgba = Mat()
+        val gray = Mat()
+        return try {
+            Utils.bitmapToMat(src, rgba)
+            Imgproc.cvtColor(rgba, gray, Imgproc.COLOR_RGBA2GRAY)
+            Imgproc.GaussianBlur(gray, gray, Size(3.0, 3.0), 0.0)
+            val buf = ByteArray(w * h)
+            gray.get(0, 0, buf)
+            refineQuadFromGray(buf, w, h, quad) ?: quad
+        } catch (t: Throwable) {
+            quad
+        } finally {
+            rgba.release()
+            gray.release()
+        }
+    }
+
+    /**
+     * True when the image border is mostly paper-bright, i.e. the document
+     * already fills the frame and the correct fallback selection is the full
+     * frame rather than an inset rectangle.
+     */
+    fun looksPaperFilled(src: Bitmap): Boolean {
+        val biggest = max(src.width, src.height)
+        val scaled = if (biggest > 320) {
+            val s = 320f / biggest
+            Bitmap.createScaledBitmap(src, max(32, (src.width * s).toInt()), max(32, (src.height * s).toInt()), true)
+        } else {
+            src
+        }
+        val rgba = Mat()
+        val gray = Mat()
+        return try {
+            Utils.bitmapToMat(scaled, rgba)
+            Imgproc.cvtColor(rgba, gray, Imgproc.COLOR_RGBA2GRAY)
+            val w = gray.cols()
+            val h = gray.rows()
+            val band = max(2, (min(w, h) * 0.08f).toInt())
+            val buf = ByteArray(w * h)
+            gray.get(0, 0, buf)
+            var total = 0
+            var bright = 0
+            for (y in 0 until h) {
+                for (x in 0 until w) {
+                    val onEdge = x < band || y < band || x >= w - band || y >= h - band
+                    if (!onEdge) continue
+                    total++
+                    if ((buf[y * w + x].toInt() and 0xFF) >= 185) bright++
+                }
+            }
+            total > 0 && bright.toFloat() / total > 0.55f
+        } catch (t: Throwable) {
+            false
+        } finally {
+            rgba.release()
+            gray.release()
+            if (scaled !== src) scaled.recycle()
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Detection internals
+    // ---------------------------------------------------------------------
+
+    /** A validated quad candidate with the metrics used for scoring. */
+    private data class QuadCandidate(
+        val quad: QuadF,
+        val fill: Float,
+        val borderTouches: Int,
+        val angleCos: Float,
+    ) {
+        fun score(): Float = quad.area() + 0.25f * fill - 0.04f * borderTouches - 0.2f * angleCos
+    }
+
+    /**
+     * Strategy A preprocessing: normalize -> THRESH_TRUNC at 150 ("paper is
+     * bright, make it uniformly bright") -> normalize -> Canny(200, 75) ->
+     * morphological close 10x10 to bridge the gaps of ragged paper edges.
+     */
+    private fun edgesFromPaperStrategy(blurred: Mat, out: Mat) {
+        val norm = Mat()
+        val truncated = Mat()
+        val renorm = Mat()
+        val cut = Mat()
+        val closed = Mat()
+        val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(10.0, 10.0))
+        try {
+            Core.normalize(blurred, norm, 0.0, 255.0, Core.NORM_MINMAX)
+            Imgproc.threshold(norm, truncated, 150.0, 255.0, Imgproc.THRESH_TRUNC)
+            Core.normalize(truncated, renorm, 0.0, 255.0, Core.NORM_MINMAX)
+            Imgproc.Canny(renorm, cut, 200.0, 75.0)
+            Imgproc.morphologyEx(cut, closed, Imgproc.MORPH_CLOSE, kernel)
+            closed.copyTo(out)
+        } finally {
+            norm.release()
+            truncated.release()
+            renorm.release()
+            cut.release()
+            closed.release()
+            kernel.release()
+        }
+    }
+
+    /**
+     * Strategy B preprocessing: Otsu binarization then Canny(50, 150) with a
+     * light close - separates a white document from a mid-tone background
+     * even when the overall contrast is low.
+     */
+    private fun edgesFromOtsuStrategy(blurred: Mat, out: Mat) {
+        val bin = Mat()
+        val cut = Mat()
+        val closed = Mat()
+        val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(5.0, 5.0))
+        try {
+            Imgproc.threshold(blurred, bin, 0.0, 255.0, Imgproc.THRESH_BINARY + Imgproc.THRESH_OTSU)
+            Imgproc.Canny(bin, cut, 50.0, 150.0)
+            Imgproc.morphologyEx(cut, closed, Imgproc.MORPH_CLOSE, kernel)
+            closed.copyTo(out)
+        } finally {
+            bin.release()
+            cut.release()
+            closed.release()
+            kernel.release()
+        }
+    }
+
+    /**
+     * Strategy B preprocessing: Otsu binarization; [binaryOut] receives the
+     * binary (for the blob source), [out] the Canny(50, 150) edges with a
+     * light close - separates a white document from a mid-tone background
+     * even when the overall contrast is low.
+     */
+    private fun edgesFromOtsuStrategy(blurred: Mat, binaryOut: Mat, out: Mat) {
+        val cut = Mat()
+        val closed = Mat()
+        val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(5.0, 5.0))
+        try {
+            Imgproc.threshold(blurred, binaryOut, 0.0, 255.0, Imgproc.THRESH_BINARY + Imgproc.THRESH_OTSU)
+            Imgproc.Canny(binaryOut, cut, 50.0, 150.0)
+            Imgproc.morphologyEx(cut, closed, Imgproc.MORPH_CLOSE, kernel)
+            closed.copyTo(out)
+        } finally {
+            cut.release()
+            closed.release()
+            kernel.release()
+        }
+    }
+
+    /**
+     * Source B2: quads of bright blobs in the Otsu binary at two close/open
+     * scales - the classic "largest bright region" document detector. Works
+     * when the paper/background contrast is too faint for Canny.
+     */
+    private fun otsuBlobQuads(binary: Mat, w: Int, h: Int, imgArea: Double, out: MutableList<QuadCandidate>) {
+        val blob = Mat()
+        val hierarchy = Mat()
+        val contours = mutableListOf<MatOfPoint>()
+        try {
+            val shortSide = min(w, h).toFloat()
+            for (rel in intArrayOf(28, 0)) {
+                binary.copyTo(blob)
+                if (rel > 0) {
+                    val k = max(9, (shortSide.toInt() / rel) or 1)
+                    val ker = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(k.toDouble(), k.toDouble()))
+                    try {
+                        Imgproc.morphologyEx(blob, blob, Imgproc.MORPH_CLOSE, ker)
+                        Imgproc.morphologyEx(blob, blob, Imgproc.MORPH_OPEN, ker)
+                    } finally {
+                        ker.release()
+                    }
+                }
+                contours.clear()
+                Imgproc.findContours(blob, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+                extractQuadsFromContours(contours, w, h, imgArea, maxN = 6, out = out)
+                contours.forEach { it.release() }
+                contours.clear()
+            }
+        } finally {
+            blob.release()
+            hierarchy.release()
+        }
+    }
 
     /**
      * Marks long connected Canny components (object boundaries) into [out].
@@ -162,58 +403,17 @@ object ScannerVision {
     }
 
     /**
-     * Floods the paper mask while blocking structural edges; each flooded
-     * region >= 8% of the image yields candidates ("flood" source).
+     * Paper-mask blobs at three close/open scales ("mask" source). The HSV
+     * mask isolates bright low-saturation regions, so paper separates from
+     * coloured desks; the close/open rounds merge the paper region and drop
+     * small white clutter.
      */
-    private fun floodCandidates(
-        mask: Mat,
-        struct: Mat,
-        imgArea: Double,
+    private fun maskBlobQuads(
+        paperMask: Mat,
         w: Int,
         h: Int,
-        out: MutableList<Candidate>,
-    ) {
-        val inv = Mat()
-        val allowed = Mat()
-        val labels = Mat()
-        val stats = Mat()
-        val centroids = Mat()
-        val comp = Mat()
-        val hierarchy = Mat()
-        val contours = mutableListOf<MatOfPoint>()
-        try {
-            Core.bitwise_not(struct, inv)
-            Core.bitwise_and(mask, inv, allowed)
-            val n = Imgproc.connectedComponentsWithStats(allowed, labels, stats, centroids)
-            val st = IntArray(5)
-            for (i in 1 until n) {
-                stats.get(i, 0, st)
-                if (st[4] < imgArea * MIN_QUAD_AREA) continue
-                Core.compare(labels, Scalar(i.toDouble()), comp, Core.CMP_EQ)
-                contours.clear()
-                Imgproc.findContours(comp, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
-                addFromContours(contours, imgArea, w, h, out, maxN = 2)
-                contours.forEach { it.release() }
-                contours.clear()
-            }
-        } finally {
-            inv.release()
-            allowed.release()
-            labels.release()
-            stats.release()
-            centroids.release()
-            comp.release()
-            hierarchy.release()
-        }
-    }
-
-    /** Paper-mask blobs at several close scales ("mask" sources). */
-    private fun maskBlobCandidates(
-        mask: Mat,
         imgArea: Double,
-        w: Int,
-        h: Int,
-        out: MutableList<Candidate>,
+        out: MutableList<QuadCandidate>,
     ) {
         val m = Mat()
         val hierarchy = Mat()
@@ -221,7 +421,7 @@ object ScannerVision {
         try {
             val shortSide = min(w, h).toFloat()
             for (rel in intArrayOf(28, 14, 0)) {
-                mask.copyTo(m)
+                paperMask.copyTo(m)
                 if (rel > 0) {
                     val k = max(9, (shortSide.toInt() / rel) or 1)
                     val ker = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(k.toDouble(), k.toDouble()))
@@ -234,7 +434,7 @@ object ScannerVision {
                 }
                 contours.clear()
                 Imgproc.findContours(m, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
-                addFromContours(contours, imgArea, w, h, out, maxN = 4)
+                extractQuadsFromContours(contours, w, h, imgArea, maxN = 4, out = out)
                 contours.forEach { it.release() }
                 contours.clear()
             }
@@ -244,122 +444,174 @@ object ScannerVision {
         }
     }
 
-    /** Canny contours under adaptive + fixed thresholds ("canny" sources). */
-    private fun cannyCandidates(
-        gray: Mat,
-        imgArea: Double,
+    /**
+     * Floods the paper mask while blocking long structural edges ("flood"
+     * source): the barriers split paper from white clutter that touches it,
+     * so a page next to a white keyboard becomes its own region.
+     */
+    private fun floodQuads(
+        paperMask: Mat,
+        structural: Mat,
         w: Int,
         h: Int,
-        out: MutableList<Candidate>,
+        imgArea: Double,
+        out: MutableList<QuadCandidate>,
     ) {
-        val med = Mat()
-        val edges = Mat()
-        val closed = Mat()
+        val inv = Mat()
+        val allowed = Mat()
         val hierarchy = Mat()
-        val k5 = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(5.0, 5.0))
         val contours = mutableListOf<MatOfPoint>()
         try {
-            Imgproc.medianBlur(gray, med, 5)
-            val median = medianLuminance(med)
-            val thresholdSets = mutableListOf<Pair<Double, Double>>()
-            if (median > 8.0) {
-                val low = max(0.0, 0.66 * median)
-                val high = min(255.0, 1.33 * median)
-                if (high > low) thresholdSets.add(low to high)
-            }
-            thresholdSets.add(30.0 to 90.0)
-            thresholdSets.add(50.0 to 150.0)
-            for ((lo, hi) in thresholdSets) {
-                Imgproc.Canny(gray, edges, lo, hi)
-                Imgproc.dilate(edges, edges, k5)
-                Imgproc.morphologyEx(edges, closed, Imgproc.MORPH_CLOSE, k5)
-                contours.clear()
-                Imgproc.findContours(closed, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
-                addFromContours(contours, imgArea, w, h, out, maxN = 5)
-                contours.forEach { it.release() }
-                contours.clear()
-            }
+            Core.bitwise_not(structural, inv)
+            Core.bitwise_and(paperMask, inv, allowed)
+            Imgproc.findContours(allowed, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+            extractQuadsFromContours(contours, w, h, imgArea, maxN = 4, out = out)
         } finally {
-            med.release()
-            edges.release()
-            closed.release()
+            inv.release()
+            allowed.release()
             hierarchy.release()
-            k5.release()
+            contours.forEach { it.release() }
         }
     }
 
-    /** Turns the top contours into deduped candidate quads. */
-    private fun addFromContours(
-        contours: List<MatOfPoint>,
-        imgArea: Double,
+    /**
+     * Extracts validated quad candidates from one Canny edge map (sources
+     * A/B/C).
+     */
+    private fun collectFromEdges(
+        edges: Mat,
         w: Int,
         h: Int,
-        out: MutableList<Candidate>,
+        imgArea: Double,
+        out: MutableList<QuadCandidate>,
+    ) {
+        val contours = mutableListOf<MatOfPoint>()
+        val hierarchy = Mat()
+        try {
+            Imgproc.findContours(edges, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+            extractQuadsFromContours(contours, w, h, imgArea, maxN = 8, out = out)
+        } finally {
+            hierarchy.release()
+            contours.forEach { it.release() }
+        }
+    }
+
+    /**
+     * Turns the top contours into validated candidate quads. For each
+     * contour: convex hull, then two corner extractors - escalating-epsilon
+     * approxPolyDP (4- or 5-point, curled-corner recovery) and the extreme
+     * sum/difference points (robust for curved page blobs) - deduped before
+     * validation.
+     */
+    private fun extractQuadsFromContours(
+        contours: List<MatOfPoint>,
+        w: Int,
+        h: Int,
+        imgArea: Double,
         maxN: Int,
+        out: MutableList<QuadCandidate>,
     ) {
         val sorted = contours.sortedByDescending { Imgproc.contourArea(it) }
         for (contour in sorted.take(maxN)) {
-            val area = Imgproc.contourArea(contour)
-            if (area < imgArea * MIN_QUAD_AREA) continue
-            val approx = approxQuad(contour, w, h)
-            val extreme = extremeQuad(contour, w, h)
-            val list = listOf(approx, extreme).filterNotNull()
-            val seen = mutableListOf<QuadF>()
-            for (q in list) {
-                val dup = seen.any {
-                    kotlin.math.abs(it.points().sumOf { p -> p.x.toDouble() } - q.points().sumOf { p -> p.x.toDouble() }) < 0.16 &&
-                        kotlin.math.abs(it.points().sumOf { p -> p.y.toDouble() } - q.points().sumOf { p -> p.y.toDouble() }) < 0.16
+            val hullInt = MatOfInt()
+            var hullPts: MatOfPoint? = null
+            var hull2f: MatOfPoint2f? = null
+            var approx: MatOfPoint2f? = null
+            try {
+                if (Imgproc.contourArea(contour) < imgArea * MIN_SOURCE_AREA) continue
+                Imgproc.convexHull(contour, hullInt)
+                val contourPts = contour.toArray()
+                hullPts = MatOfPoint(*hullInt.toArray().map { contourPts[it.toInt()] }.toTypedArray())
+                hull2f = MatOfPoint2f(*hullPts.toArray())
+                val hullArea = Imgproc.contourArea(hull2f)
+                if (hullArea <= 0.0) continue
+
+                val peri = Imgproc.arcLength(hull2f, true)
+                approx = MatOfPoint2f()
+                var approxQuad: QuadF? = null
+                for (eps in doubleArrayOf(0.02, 0.03, 0.05)) {
+                    Imgproc.approxPolyDP(hull2f, approx, eps * peri, true)
+                    if (approx.total() == 4L || approx.total() == 5L) {
+                        val polygon = approx.toList().map { Pt((it.x / w).toFloat(), (it.y / h).toFloat()) }
+                        approxQuad = QuadF.fromPolygon(polygon)
+                        if (approxQuad != null) break
+                    }
                 }
-                if (!dup) {
-                    seen.add(q)
-                    out.add(Candidate(q, area))
+                val extremeQuad = extremeQuad(contourPts, w, h)
+
+                // Deduplicate near-identical quads (same corners by centroid).
+                val seen = mutableListOf<QuadF>()
+                for (q in listOfNotNull(approxQuad, extremeQuad)) {
+                    val dup = seen.any {
+                        Math.abs(it.centroid().x - q.centroid().x) < 0.08f &&
+                            Math.abs(it.centroid().y - q.centroid().y) < 0.08f
+                    }
+                    if (!dup) {
+                        seen.add(q)
+                        validateQuad(q, hullArea, imgArea)?.let { out.add(it) }
+                    }
                 }
+            } finally {
+                hullInt.release()
+                hullPts?.release()
+                hull2f?.release()
+                approx?.release()
             }
         }
     }
 
-    /** approxPolyDP with escalating epsilon until a convex 4-gon appears. */
-    private fun approxQuad(contour: MatOfPoint, w: Int, h: Int): QuadF? {
-        val c2f = MatOfPoint2f(*contour.toArray())
-        val approx = MatOfPoint2f()
-        return try {
-            val peri = Imgproc.arcLength(c2f, true)
-            for (eps in doubleArrayOf(0.01, 0.02, 0.03, 0.05)) {
-                Imgproc.approxPolyDP(c2f, approx, eps * peri, true)
-                if (approx.total() == 4L && Imgproc.isContourConvex(MatOfPoint(*approx.toArray()))) {
-                    val pts = approx.toList().map { Pt((it.x / w).toFloat(), (it.y / h).toFloat()) }
-                    val quad = QuadF.ordered(pts) ?: return null
-                    return quad
-                }
-            }
-            null
-        } catch (t: Throwable) {
-            null
-        } finally {
-            c2f.release()
-            approx.release()
+    /** Validates one quad against its source contour; null when implausible. */
+    private fun validateQuad(quad: QuadF, hullArea: Double, imgArea: Double): QuadCandidate? {
+        val areaFrac = quad.area()
+        if (areaFrac < MIN_AREA_FRACTION || areaFrac > MAX_AREA_FRACTION) return null
+        if (!quad.isConvex()) return null
+        val angleCos = quad.maxAngleCos()
+        if (angleCos > MAX_SHARP_ANGLE_COS) return null
+        val quadAreaPx = areaFrac.toDouble() * imgArea
+        val fill = (quadAreaPx / hullArea).toFloat()
+        if (fill < MIN_FILL_RATIO) return null
+        var borderTouches = 0
+        for (p in quad.points()) {
+            if (p.x < 0.02f || p.x > 0.98f || p.y < 0.02f || p.y > 0.98f) borderTouches++
         }
+        if (borderTouches > MAX_BORDER_TOUCHES) return null
+        return QuadCandidate(quad, fill, borderTouches, angleCos)
     }
 
     /**
      * Corners from the extreme sum/difference contour points - robust for
      * curved page blobs where approxPolyDP never yields exactly 4 points.
      */
-    private fun extremeQuad(contour: MatOfPoint, w: Int, h: Int): QuadF? {
-        val pts = contour.toArray()
+    private fun extremeQuad(pts: Array<Point>, w: Int, h: Int): QuadF? {
         if (pts.size < 4) return null
         return try {
-            var minSum = Double.MAX_VALUE; var maxSum = -Double.MAX_VALUE
-            var minDiff = Double.MAX_VALUE; var maxDiff = -Double.MAX_VALUE
-            var pMinSum = pts[0]; var pMaxSum = pts[0]
-            var pMinDiff = pts[0]; var pMaxDiff = pts[0]
+            var minSum = Double.MAX_VALUE
+            var maxSum = -Double.MAX_VALUE
+            var minDiff = Double.MAX_VALUE
+            var maxDiff = -Double.MAX_VALUE
+            var pMinSum = pts[0]
+            var pMaxSum = pts[0]
+            var pMinDiff = pts[0]
+            var pMaxDiff = pts[0]
             for (p in pts) {
                 val s = p.x + p.y
                 val d = p.y - p.x
-                if (s < minSum) { minSum = s; pMinSum = p }
-                if (s > maxSum) { maxSum = s; pMaxSum = p }
-                if (d < minDiff) { minDiff = d; pMinDiff = p }
-                if (d > maxDiff) { maxDiff = d; pMaxDiff = p }
+                if (s < minSum) {
+                    minSum = s
+                    pMinSum = p
+                }
+                if (s > maxSum) {
+                    maxSum = s
+                    pMaxSum = p
+                }
+                if (d < minDiff) {
+                    minDiff = d
+                    pMinDiff = p
+                }
+                if (d > maxDiff) {
+                    maxDiff = d
+                    pMaxDiff = p
+                }
             }
             val norm = { p: Point -> Pt((p.x / w).toFloat(), (p.y / h).toFloat()) }
             QuadF.ordered(listOf(norm(pMinSum), norm(pMinDiff), norm(pMaxSum), norm(pMaxDiff)))
@@ -368,74 +620,8 @@ object ScannerVision {
         }
     }
 
-    /** Document-likelihood score; 0.0 for implausible quads. */
-    private fun scoreQuad(q: QuadF, contourArea: Double, emap: Mat): Double {
-        val qa = q.area().toDouble()
-        if (qa < MIN_SCORED_AREA || qa > MAX_SCORED_AREA) return 0.0
-        val tf = touchesFrame(q)
-        if (tf >= 3) return 0.0
-        val fill = min(1.0, contourArea / qa)
-
-        val sup = edgeSupport(q, emap)
-        if (sup < MIN_EDGE_SUPPORT) return 0.0
-
-        val border = min(
-            minOf(q.tl.x, q.tl.y),
-            minOf(
-                minOf(1f - q.tr.x, q.tr.y),
-                minOf(minOf(1f - q.br.x, 1f - q.br.y), minOf(q.bl.x, 1f - q.bl.y)),
-            ),
-        )
-        val borderPen = if (border > 0.015) 0.0 else 0.6 * tf / 2.0
-
-        val c = q.centroid()
-        val centerPen = 0.5 * (kotlin.math.abs(c.x - 0.5) + kotlin.math.abs(c.y - 0.5))
-        val area = if (qa <= 0.85) qa else 0.85 - (qa - 0.85)
-        return max(0.0, area * fill * (1.0 - borderPen) * (1.0 - min(0.6, centerPen)) * sup)
-    }
-
-    /** Number of corners within 1.2% of the frame border. */
-    private fun touchesFrame(q: QuadF, tol: Float = FRAME_TOUCH_TOL.toFloat()): Int {
-        var c = 0
-        for (p in q.points()) {
-            if (p.x < tol || p.x > 1f - tol || p.y < tol || p.y > 1f - tol) c++
-        }
-        return c
-    }
-
-    /**
-     * Fraction of sampled points along the quad's four sides that sit on an
-     * edge (7x7 tolerance window on the dilated Canny map). The decisive
-     * validator: frame-hugging mega-contours cross empty background and fail.
-     */
-    private fun edgeSupport(q: QuadF, emap: Mat, n: Int = 24): Double {
-        val w = emap.cols()
-        val h = emap.rows()
-        val p = q.points()
-        var hit = 0
-        var total = 0
-        for (i in p.indices) {
-            val a = p[i]
-            val b = p[(i + 1) % p.size]
-            for (k in 0 until n) {
-                val t = 0.05 + 0.9 * k / (n - 1)
-                val x = ((a.x + (b.x - a.x) * t) * w).toInt()
-                val y = ((a.y + (b.y - a.y) * t) * h).toInt()
-                val x0 = max(0, x - 3)
-                val y0 = max(0, y - 3)
-                val rw = min(7, w - x0)
-                val rh = min(7, h - y0)
-                if (rw <= 0 || rh <= 0) continue
-                val roi = emap.submat(Rect(x0, y0, rw, rh))
-                total++
-                if (Core.countNonZero(roi) > 0) hit++
-            }
-        }
-        return if (total == 0) 0.0 else hit.toDouble() / total
-    }
-
-    /** Median of the gray histogram (robust against outliers than the mean). */
-    private fun medianLuminance(gray: Mat): Double {
+    /** Median of the gray histogram (more robust against outliers than the mean). */
+    private fun percentile(gray: Mat, p: Double): Double {
         val size = 256
         val hist = Mat()
         return try {
@@ -443,21 +629,146 @@ object ScannerVision {
             val total = gray.total()
             val data = FloatArray(size)
             hist.get(0, 0, data)
+            val target = total * p / 100.0
             var acc = 0.0
-            var median = 0.0
+            var value = 0.0
             for (i in 0 until size) {
                 acc += data[i].toDouble()
-                if (acc >= total / 2.0) {
-                    median = i.toDouble()
+                if (acc >= target) {
+                    value = i.toDouble()
                     break
                 }
             }
-            median
+            value
         } catch (t: Throwable) {
             0.0
         } finally {
             hist.release()
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // Gradient edge-snap refinement internals
+    // ---------------------------------------------------------------------
+
+    internal fun refineQuadFromGray(buf: ByteArray, w: Int, h: Int, quad: QuadF): QuadF? {
+        val diag = Math.sqrt((w * w + h * h).toDouble()).toFloat()
+        val search = (diag * 0.015f).coerceIn(6f, 48f)
+        val samples = 24
+        val edges = listOf(
+            quad.tl to quad.tr,
+            quad.tr to quad.br,
+            quad.br to quad.bl,
+            quad.bl to quad.tl,
+        )
+
+        val lines = mutableListOf<LineF>()
+        for ((a, b) in edges) {
+            val ax = a.x * w
+            val ay = a.y * h
+            val bx = b.x * w
+            val by = b.y * h
+            val ex = bx - ax
+            val ey = by - ay
+            val len = Math.sqrt((ex * ex + ey * ey).toDouble()).toFloat()
+            if (len < 8f) {
+                lines.add(LineF(ax, ay, 1f, 0f))
+                continue
+            }
+            val nx = -ey / len
+            val ny = ex / len
+            val snapped = mutableListOf<Pt>()
+            for (i in 0 until samples) {
+                val t = (i + 0.5f) / samples
+                val px = ax + ex * t
+                val py = ay + ey * t
+                val cand = snapPoint(buf, w, h, px, py, nx, ny, search)
+                if (cand != null) snapped.add(cand)
+            }
+            // Fit a line through the snapped samples; if too few snapped,
+            // keep the original edge as the line (conservative).
+            val fitted = if (snapped.size >= samples * 0.4f) LineF.fit(snapped) else null
+            lines.add(fitted ?: LineF(ax, ay, ex / len, ey / len))
+        }
+
+        val corners = mutableListOf<Pt>()
+        for (i in 0 until 4) {
+            val p = lines[i].intersect(lines[(i + 1) % 4]) ?: return null
+            if (p.x < -search || p.x > w + search || p.y < -search || p.y > h + search) return null
+            corners.add(p)
+        }
+        val refined = QuadF.ordered(corners) ?: return null
+
+        // Guards: refinement must be a small, sane correction.
+        val maxShift = diag * 0.025f
+        val orig = quad.points()
+        for (i in 0 until 4) {
+            val dx = (corners[i].x - orig[i].x) * w
+            val dy = (corners[i].y - orig[i].y) * h
+            if (Math.sqrt((dx * dx + dy * dy).toDouble()) > maxShift) return null
+        }
+        if (!refined.isConvex() || refined.maxAngleCos() > 0.6f) return null
+        val a0 = quad.area()
+        val a1 = refined.area()
+        if (a0 <= 0f) return null
+        val ratio = a1 / a0
+        if (ratio < 0.75f || ratio > 1.33f) return null
+        if (a1 < 0.03f || a1 > 0.985f) return null
+        return refined
+    }
+
+    /**
+     * Walks along [nx],[ny] within +/- [search] px around (px, py) and snaps
+     * to the nearest gradient peak with at least 55% of the window's peak
+     * magnitude (preferring nearby edges over farther text lines).
+     */
+    private fun snapPoint(
+        buf: ByteArray,
+        w: Int,
+        h: Int,
+        px: Float,
+        py: Float,
+        nx: Float,
+        ny: Float,
+        search: Float,
+    ): Pt? {
+        val r = search.toInt()
+        if (r < 3) return null
+        val n = 2 * r + 1
+        val profile = FloatArray(n)
+        var peak = 0f
+        for (k in 0 until n) {
+            val t = (k - r).toFloat()
+            val x = (px + t * nx).toInt()
+            val y = (py + t * ny).toInt()
+            if (x < 1 || y < 1 || x > w - 2 || y > h - 2) continue
+            val gx = (lumAt(buf, w, h, x + 1, y) - lumAt(buf, w, h, x - 1, y)).toFloat()
+            val gy = (lumAt(buf, w, h, x, y + 1) - lumAt(buf, w, h, x, y - 1)).toFloat()
+            val magnitude = Math.abs(gx * nx + gy * ny)
+            profile[k] = magnitude
+            if (magnitude > peak) peak = magnitude
+        }
+        // No meaningful edge anywhere in the window.
+        if (peak < 24f) return null
+        val threshold = peak * 0.55f
+        var bestK = -1
+        scanOut@ for (d in 0..r) {
+            for (k in intArrayOf(r - d, r + d).distinct()) {
+                if (k in 0 until n && profile[k] >= threshold) {
+                    bestK = k
+                    break@scanOut
+                }
+            }
+        }
+        if (bestK < 0) return null
+        val t = (bestK - r).toFloat()
+        return Pt((px + t * nx) / w, (py + t * ny) / h)
+    }
+
+    private fun lumAt(buf: ByteArray, w: Int, h: Int, x: Int, y: Int): Int {
+        val cx = x.coerceIn(0, w - 1)
+        val cy = y.coerceIn(0, h - 1)
+        return buf[cy * w + cx].toInt() and 0xFF
     }
 
     /**

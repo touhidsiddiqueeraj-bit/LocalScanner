@@ -6,7 +6,7 @@ plugins {
 }
 
 // Release version can be overridden from CI (tag name, e.g. -PappVersion=1.2.0)
-val appVersionName = (project.findProperty("appVersion") as String?) ?: "1.0.0"
+val appVersionName = (project.findProperty("appVersion") as String?) ?: "1.0.2"
 val ciRun = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
 
 android {
@@ -152,8 +152,12 @@ tasks.withType<Test>().configureEach {
     // Robolectric + Compose rendering needs more than the default 512m heap.
     maxHeapSize = "1792m"
     // Allow a pre-warmed android-all jar cache (set ROBOLECTRIC_CACHE_DIR locally).
+    // Robolectric 4.13's MavenDependencyResolver honours maven.repo.local
+    // (maven repository layout); keep the legacy cache-dir property too for
+    // older resolver paths.
     System.getenv("ROBOLECTRIC_CACHE_DIR")?.let {
         systemProperty("robolectric.dependency.cache.dir", it)
+        systemProperty("maven.repo.local", it)
     }
     // Optional Maven mirror for android-all artifacts (e.g. when Maven Central
     // rate-limits: ROBOLECTRIC_MAVEN_URL=https://maven.aliyun.com/repository/public).

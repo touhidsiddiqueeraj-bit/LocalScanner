@@ -105,7 +105,7 @@ class CaptureViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         frameAspect = bmp.width.toFloat() / bmp.height.toFloat()
-        detectedQuad = ScannerVision.detectQuad(bmp, 384)
+        detectedQuad = ScannerVision.detectQuad(bmp, 448)
         bmp.recycle()
         proxy.close()
     }
