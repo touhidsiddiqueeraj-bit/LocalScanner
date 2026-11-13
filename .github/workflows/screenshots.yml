@@ -35,27 +35,30 @@ jobs:
       - name: Run screenshot tests
         run: ./gradlew :app:testDebugUnitTest --tests "com.localscanner.app.AppScreenshots" --stacktrace
 
-      - name: Commit screenshots
+      - name: Collect and commit screenshots
         run: |
+          echo "workspace: $(pwd)"
+          find . -type f -name "*.png" -path "*screenshot*" -print
           mkdir -p docs/screenshots
-          shopt -s nullglob
-          for f in app/src/test/screenshots/*.png; do
-            cp "$f" docs/screenshots/
-          done
+          find . -type f -name "*.png" -path "*screenshot*" ! -path "./docs/*" -exec cp {} docs/screenshots/ \;
+          ls -la docs/screenshots
           count=$(ls docs/screenshots/*.png 2>/dev/null | wc -l)
           echo "captured $count screenshots"
           if [ "$count" -lt 8 ]; then
             echo "::error::Expected the screenshot suite to render at least 8 PNGs, found $count"
             exit 1
           fi
+          git status --porcelain | head -20
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/screenshots
-          if git diff --cached --quiet; then
-            echo "No screenshot changes"
-          else
+          git add -f docs/screenshots
+          echo "staged:"
+          git diff --cached --stat | head -15
+          if [ -n "$(git diff --cached --name-only)" ]; then
             git commit -m "docs: refresh UI screenshots [skip ci]"
             git push
+          else
+            echo "::warning::No screenshot changes were staged"
           fi
 
       - name: Upload screenshots artifact
@@ -63,5 +66,5 @@ jobs:
         if: always()
         with:
           name: app-screenshots
-          path: app/src/test/screenshots/*.png
+          path: docs/screenshots/*.png
           retention-days: 30
