@@ -38,7 +38,7 @@ reconstruction using the real edge-overlay component (runners have no camera).
 
 | CamScanner capability | LocalScanner implementation |
 | --- | --- |
-| Auto edge detection while framing | OpenCV Canny + contour + `approxPolyDP` quad finder, live overlay on the CameraX preview |
+| Auto edge detection while framing | OpenCV Canny + contour + `approxPolyDP` quad finder, live overlay on the CameraX preview; on captured photos a multi-source detector (paper-mask flood around long structural edges, mask blobs, Canny contours) scored by document likelihood picks the page quad |
 | Single & batch shooting modes | CamScanner-style mode pills in the camera UI; Single auto-crops the page and jumps straight to enhancement, Batch keeps snapping pages for a combined review |
 | Manual corner adjustment ("smart crop") | Draggable corner handles with dimmed background mask; auto-crop applies the detected quad automatically and an "Auto-crop all" action processes every remaining page |
 | Perspective correction / de-skew | OpenCV `getPerspectiveTransform` + `warpPerspective` at up to 2048px |

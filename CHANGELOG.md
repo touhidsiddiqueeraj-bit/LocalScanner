@@ -4,6 +4,23 @@ All notable changes to LocalScanner are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] - 2026-11-13
+
+### Fixed
+
+- **Page detection on real photos**: on cluttered scenes (paper on a wooden desk
+  beside a white keyboard, over bright floor tiles) the still-photo detector
+  found no quad at all, so every page fell back to the full frame and nothing
+  was auto-cropped. The detector now gathers candidate quads from independent
+  sources - paper-mask regions flooded around *long* structural Canny edges
+  (page outlines, keyboard frame - while text and table rules are filtered out),
+  paper-mask blobs at several morphological scales, and Canny contours under
+  adaptive thresholds - then scores every candidate by document likelihood:
+  area share, contour fill, frame-hug rejection, centrality and perimeter edge
+  support (a real document's four sides must sit on actual image edges). The
+  winning quad auto-crops and perspective-corrects like before; when nothing
+  document-like is found the full frame is kept so pixels are never lost.
+
 ## [1.0.0] - 2026-11-13
 
 First full feature release — local CamScanner-parity scanning, all on-device.
