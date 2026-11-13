@@ -73,3 +73,14 @@ both, replicating CamScanner's full-text document search locally.
 - `ci.yml`: assembleDebug + unit tests + lint on push/PR, APK artifact upload.
 - `release.yml`: on `v*` tags, optional keystore secrets → signed APK → GitHub Release;
   debug-signed fallback when secrets are absent.
+
+
+## Testing
+
+Core logic is pure Kotlin and unit-tested on the JVM (quad geometry, page-size
+calculation, text cleanup, OCR line codec). UI-level verification uses
+Robolectric + Roborazzi: `AppScreenshots` boots the real screens with seeded
+Room/DataStore data inside `ScreenshotApp` (which skips native engine loading via
+the `initEngines`/`onContainerReady` hooks) and captures the rendering to PNG.
+The Screenshots workflow commits refreshed captures to `docs/screenshots/`,
+which the README embeds.

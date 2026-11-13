@@ -4,6 +4,35 @@
 
 ![CI](https://github.com/touhidsiddiqueeraj-bit/LocalScanner/actions/workflows/ci.yml/badge.svg)
 ![Release](https://github.com/touhidsiddiqueeraj-bit/LocalScanner/actions/workflows/release.yml/badge.svg)
+![Screenshots](https://github.com/touhidsiddiqueeraj-bit/LocalScanner/actions/workflows/screenshots.yml/badge.svg)
+
+## Download
+
+Grab the latest APK from [GitHub Releases](https://github.com/touhidsiddiqueeraj-bit/LocalScanner/releases/latest):
+
+```bash
+# or with the GitHub CLI
+gh release download --repo touhidsiddiqueeraj-bit/LocalScanner --pattern "*.apk"
+```
+
+Install, grant camera access, and scan. The APK bundles both OCR engines and all
+models, so nothing is downloaded at runtime.
+
+## Screenshots
+
+| | | |
+| --- | --- | --- |
+| ![Home](docs/screenshots/home_light.png) | ![Capture](docs/screenshots/capture.png) | ![Crop](docs/screenshots/crop.png) |
+| *Documents & search* | *Live edge detection* | *Manual corners* |
+| ![Filter](docs/screenshots/filter.png) | ![Detail](docs/screenshots/doc_detail.png) | ![OCR](docs/screenshots/ocr.png) |
+| *Magic Color enhance* | *Multi-page doc* | *Editable OCR text* |
+| ![PDF](docs/screenshots/pdf.png) | ![Home dark](docs/screenshots/home_dark.png) | ![Settings dark](docs/screenshots/settings_dark.png) |
+| *Searchable PDF export* | *Dark mode* | *Settings* |
+
+Rendered by the [Screenshots workflow](https://github.com/touhidsiddiqueeraj-bit/LocalScanner/blob/main/.github/workflows/screenshots.yml):
+Robolectric boots the real Compose screens with seeded data on a JVM runner and
+Roborazzi writes the PNGs — no emulator, no device. The capture screen is a
+reconstruction using the real edge-overlay component (runners have no camera).
 
 ## Features
 
@@ -62,20 +91,35 @@ on-demand from the document screen.
 
 ```bash
 ./gradlew :app:assembleDebug     # debug APK
-./gradlew :app:testDebugUnitTest # unit tests
+./gradlew :app:testDebugUnitTest --tests "com.localscanner.app.*Test"  # unit tests
+./gradlew :app:testDebugUnitTest --tests "com.localscanner.app.AppScreenshots"  # UI screenshots
 ./gradlew :app:assembleRelease   # release APK (signed with CI key if configured)
 ```
 
 Requirements: JDK 17, Android SDK 34.
 
+### Testing
+
+- **Unit tests** (`QuadTest`, `TextUtilsTest`, `PageSizeCalculatorTest`): pure-JVM
+  coverage of quad geometry, page-size math, text cleanup and the OCR line codec.
+- **Screenshot tests** (`AppScreenshots`): render the real Compose screens with
+  seeded Room/DataStore data on Robolectric and capture PNGs via Roborazzi.
+  Images land in `app/src/test/screenshots/` locally and are committed to
+  `docs/screenshots/` by the Screenshots workflow on every UI change.
+- The DI container exposes overridable engine-init hooks
+  (`LocalScannerApp.initEngines` / `onContainerReady`) so JVM tests run without
+  the native OpenCV/Tesseract libraries.
+
 ## CI/CD
 
-Two GitHub Actions workflows ship with the repository:
+Three GitHub Actions workflows ship with the repository:
 
 1. **`ci.yml`** — on every push/PR to `main`: builds the debug APK, runs unit tests, runs lint,
    uploads the APK as an artifact.
 2. **`release.yml`** — on tag push `vX.Y.Z`: builds a **signed release APK** and attaches it to a
    GitHub Release with generated notes.
+3. **`screenshots.yml`** — on UI changes: renders the real screens on a JVM runner
+   (Robolectric + Roborazzi) and commits fresh PNGs to `docs/screenshots/`.
 
 ### Making signed releases work
 
@@ -102,8 +146,16 @@ Never commit `keystore.jks` to the repository (it is git-ignored).
 To cut a release:
 
 ```bash
-git tag v1.0.0 && git push origin v1.0.0
+git tag vX.Y.Z && git push origin vX.Y.Z
 ```
+
+The workflow builds the APK, renames it to `LocalScanner-<version>.apk` and
+publishes a GitHub Release with generated notes. Update `CHANGELOG.md` for each
+release.
+
+## Release history
+
+- **1.0.0** (2026-11-13) — first full release. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Roadmap
 
