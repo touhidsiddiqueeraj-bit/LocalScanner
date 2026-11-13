@@ -92,7 +92,7 @@ on-demand from the document screen.
 ```bash
 ./gradlew :app:assembleDebug     # debug APK
 ./gradlew :app:testDebugUnitTest --tests "com.localscanner.app.*Test"  # unit tests
-./gradlew :app:testDebugUnitTest --tests "com.localscanner.app.AppScreenshots"  # UI screenshots
+./gradlew :app:recordRoborazziDebug --tests "com.localscanner.app.AppScreenshots"  # UI screenshots
 ./gradlew :app:assembleRelease   # release APK (signed with CI key if configured)
 ```
 

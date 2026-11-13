@@ -33,8 +33,8 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
 
       - name: Run screenshot tests
-        # --rerun forces execution: up-to-date/cached runs would skip PNG writing
-        run: ./gradlew :app:testDebugUnitTest --tests "com.localscanner.app.AppScreenshots" --rerun --stacktrace
+        # recordRoborazziDebug (from the Roborazzi plugin) enables record mode
+        run: ./gradlew :app:recordRoborazziDebug --tests "com.localscanner.app.AppScreenshots" --stacktrace
 
       - name: Collect and commit screenshots
         run: |
