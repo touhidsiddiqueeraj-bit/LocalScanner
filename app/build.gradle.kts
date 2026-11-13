@@ -151,11 +151,14 @@ dependencies {
 tasks.withType<Test>().configureEach {
     // Robolectric + Compose rendering needs more than the default 512m heap.
     maxHeapSize = "1792m"
-    // captureRoboImage() writes PNGs when recording is enabled (the Roborazzi
-    // Gradle plugin normally toggles this; we run without the plugin).
-    systemProperty("roborazzi.record.enable", "true")
     // Allow a pre-warmed android-all jar cache (set ROBOLECTRIC_CACHE_DIR locally).
     System.getenv("ROBOLECTRIC_CACHE_DIR")?.let {
         systemProperty("robolectric.dependency.cache.dir", it)
+    }
+    // Optional Maven mirror for android-all artifacts (e.g. when Maven Central
+    // rate-limits: ROBOLECTRIC_MAVEN_URL=https://maven.aliyun.com/repository/public).
+    System.getenv("ROBOLECTRIC_MAVEN_URL")?.let {
+        systemProperty("robolectric.dependency.repo.url", it)
+        systemProperty("robolectric.dependency.repo.id", "robolectric-mirror")
     }
 }

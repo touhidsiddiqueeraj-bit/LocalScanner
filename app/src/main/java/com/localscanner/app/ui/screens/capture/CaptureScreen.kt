@@ -24,8 +24,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FlashOff
@@ -36,7 +36,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -46,6 +45,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -53,7 +53,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.localscanner.app.domain.CaptureMode
 import com.localscanner.app.ui.components.EdgeOverlay
+import com.localscanner.app.ui.theme.ScanOverlayColor
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
@@ -147,9 +149,12 @@ private fun CameraContent(vm: CaptureViewModel, onDone: () -> Unit, onCancel: ()
         onDispose { cameraProvider?.unbindAll() }
     }
 
-    // Auto-capture trigger from the stability detector.
-    LaunchedEffect(vm.autoTrigger) {
-        if (vm.autoTrigger > 0L) vm.capture()
+    // Single mode: one shot is enough - move straight on to auto-crop.
+    LaunchedEffect(vm.singleCaptureDone) {
+        if (vm.singleCaptureDone) {
+            vm.consumeSingleCaptureDone()
+            onDone()
+        }
     }
 
     Box(
@@ -164,7 +169,7 @@ private fun CameraContent(vm: CaptureViewModel, onDone: () -> Unit, onCancel: ()
             modifier = Modifier.fillMaxSize(),
         )
 
-        // Top bar: cancel, page counter, done
+        // Top bar: cancel, page counter (batch only), done (batch only)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -176,22 +181,31 @@ private fun CameraContent(vm: CaptureViewModel, onDone: () -> Unit, onCancel: ()
                 Icon(Icons.Filled.Close, contentDescription = "Cancel", tint = Color.White)
             }
             Spacer(Modifier.weight(1f))
-            AssistChip(
-                onClick = {},
-                label = { Text("${vm.pagesCaptured} pages", color = Color.White) },
-                modifier = Modifier.border(1.dp, Color.White.copy(alpha = 0.4f), CircleShape),
-            )
-            Spacer(Modifier.weight(1f))
-            IconButton(onClick = { if (vm.pagesCaptured > 0) onDone() }, enabled = vm.pagesCaptured > 0) {
-                Icon(
-                    Icons.Filled.Check,
-                    contentDescription = "Finish capturing",
-                    tint = if (vm.pagesCaptured > 0) Color.White else Color.White.copy(alpha = 0.4f),
+            if (vm.captureMode == CaptureMode.BATCH) {
+                AssistChip(
+                    onClick = {},
+                    label = { Text("${vm.pagesCaptured} pages", color = Color.White) },
+                    modifier = Modifier.border(1.dp, Color.White.copy(alpha = 0.4f), CircleShape),
                 )
+            }
+            Spacer(Modifier.weight(1f))
+            if (vm.captureMode == CaptureMode.BATCH) {
+                IconButton(
+                    onClick = { if (vm.pagesCaptured > 0) onDone() },
+                    enabled = vm.pagesCaptured > 0,
+                ) {
+                    Icon(
+                        Icons.Filled.Check,
+                        contentDescription = "Finish capturing",
+                        tint = if (vm.pagesCaptured > 0) Color.White else Color.White.copy(alpha = 0.4f),
+                    )
+                }
+            } else {
+                Spacer(Modifier.size(48.dp))
             }
         }
 
-        // Left rail: flash + auto-capture toggles
+        // Left rail: flash toggle (auto capture was removed entirely).
         Column(
             modifier = Modifier
                 .align(Alignment.CenterStart)
@@ -216,21 +230,21 @@ private fun CameraContent(vm: CaptureViewModel, onDone: () -> Unit, onCancel: ()
                     tint = Color.White,
                 )
             }
-            Icon(Icons.Filled.Bolt, contentDescription = null, tint = Color(0xFF43DADF))
-            Switch(
-                checked = vm.autoCaptureEnabled,
-                onCheckedChange = { vm.autoCaptureEnabled = it },
-            )
         }
 
-        // Bottom bar: shutter
-        Row(
+        // Bottom: shooting mode (Single / Batch) + shutter
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 28.dp),
-            horizontalArrangement = Arrangement.Center,
+                .padding(bottom = 20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            ModeSwitcher(
+                selected = vm.captureMode,
+                onSelect = { vm.updateCaptureMode(it) },
+            )
+            Spacer(Modifier.height(18.dp))
             Box(
                 modifier = Modifier
                     .size(84.dp)
@@ -245,16 +259,38 @@ private fun CameraContent(vm: CaptureViewModel, onDone: () -> Unit, onCancel: ()
                 contentAlignment = Alignment.Center,
             ) {}
         }
+    }
+}
 
-        if (vm.autoCaptureEnabled) {
-            Text(
-                text = "Auto-capture on - hold steady",
-                color = Color.White.copy(alpha = 0.85f),
-                style = MaterialTheme.typography.labelMedium,
+/** CamScanner-style shooting mode selector: Single | Batch. */
+@Composable
+private fun ModeSwitcher(
+    selected: CaptureMode,
+    onSelect: (CaptureMode) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(22.dp))
+            .border(1.dp, Color.White.copy(alpha = 0.25f), RoundedCornerShape(22.dp))
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        CaptureMode.entries.forEach { mode ->
+            val isSelected = mode == selected
+            Box(
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 8.dp),
-            )
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(if (isSelected) ScanOverlayColor else Color.Transparent)
+                    .clickable { onSelect(mode) }
+                    .padding(horizontal = 22.dp, vertical = 8.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = mode.label,
+                    color = if (isSelected) Color.Black else Color.White,
+                    style = MaterialTheme.typography.labelLarge,
+                )
+            }
         }
     }
 }

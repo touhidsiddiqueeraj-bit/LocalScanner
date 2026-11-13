@@ -130,7 +130,7 @@ class PdfExporter(private val context: Context) {
                     ext.setNonStrokingAlphaConstant(0f)
                     cs.setGraphicsStateParameters(ext)
 
-                    val lines = OcrLinesCodec.decode(entity.ocrLinesJson)
+                    val lines = OcrLinesCodec.decode(entity.ocrLinesJson)?.lines
                         ?: pseudoLines(entity.ocrText, bmp.width, bmp.height)
                     if (lines.isNotEmpty()) {
                         drawInvisibleLines(cs, lines, bmp, rect, ::getBengaliFont)

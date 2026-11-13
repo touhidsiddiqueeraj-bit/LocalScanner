@@ -11,7 +11,7 @@ libraries require for *local* model loading (ML Kit bundled models are inside th
 ┌────────────────────────── UI (Jetpack Compose, Material 3) ──────────────────────────┐
 │  Home ──► Capture ──► Crop ──► Filter ──► Document Detail ──► PDF Export             │
 │   │        (CameraX)   (quad)   (OpenCV)      │              │                       │
-│   └── gallery import ─────────────────────────┘              └── OCR editor           │
+│   └── gallery import ─────────────────────────┘              └── Page viewer (OCR)    │
 └──────────────────────────────────────────────────────────────────────────────────────┘
                      │ scan session (process-lifetime state)          │ ViewModels
 ┌────────────────────▼─────────────────────────── Domain ────────────▼──────────────────┐
@@ -31,10 +31,16 @@ libraries require for *local* model loading (ML Kit bundled models are inside th
 1. **Capture** — CameraX `Preview` (FILL_CENTER) + `ImageAnalysis` (RGBA_8888, KEEP_ONLY_LATEST)
    feeding `ScannerVision.detectQuad` on ~384px frames. A quad overlay maps frame-normalized
    coordinates through the same FILL_CENTER transform so edges align with the preview.
-   **Auto-capture**: a quad whose centroid and area stay within tolerance for 10 consecutive
-   frames (>18% coverage) triggers the shutter with a beep (cooldown 2.5s).
-2. **Crop** — detected quad pre-fills draggable corner handles; `warpPerspective` produces a
-   de-skewed page of up to 2048px (dimensions derived from the quad's real edge lengths).
+   **Single / Batch modes** (persisted): Single fires one page and moves straight to the crop
+   stage; Batch keeps a page counter and a Done action. Auto-capture was removed — only the
+   shutter takes pictures.
+2. **Crop** — the still photo is re-scanned by a robust multi-pass `detectQuad` (adaptive Canny
+   thresholds from the luminance median, morphological close, and a `minAreaRect` fallback when
+   no clean 4-point contour exists); the live-view quad rides along as an aspect-aware hint for
+   photos where detection fails. In Single mode a confident quad is applied automatically
+   (auto-advance, cancelled by any corner drag); Batch mode adds "Auto-crop all remaining pages".
+   `warpPerspective` produces a de-skewed page of up to 2048px (dimensions derived from the
+   quad's real edge lengths). Draggable corner handles remain for manual fixes.
 3. **Enhance** — Magic Color (illumination normalization → CLAHE → saturation boost),
    Grayscale, or adaptive-threshold B&W, plus brightness/contrast (`convertScaleAbs`).
 4. **Save** — pages are written to `files/documents/<docId>/page_<id>.jpg` with 512px
@@ -50,7 +56,21 @@ Two bundled engines, chosen per run:
 | Tesseract 5 (Tesseract4Android) | Bengali + English | 5 MB traineddata | `ben+eng`, line boxes via `ResultIterator` |
 
 Trained data ships in `assets/tessdata/` and is copied to `files/tesseract/tessdata/` on
-first use. Line boxes are stored as JSON (`OcrLinesCodec`) on each page row.
+first use. Line boxes are stored as JSON (`OcrLinesCodec` v2, including the reference bitmap
+size) on each page row.
+
+## Page viewer (OCR on the image)
+
+There is no separate OCR screen. `PageViewerScreen` shows each page full-screen (pager) with
+the recognized text living on the image:
+
+- **Selectable** — tapping a recognized line highlights it and shows its text with a copy
+  action; a bottom sheet offers the whole page text in a `SelectionContainer` plus
+  copy/`.txt`/share. OCR can be (re-)run per page or across all pages with progress.
+- **Searchable** — the search bar matches against every page's OCR text, highlights matching
+  line boxes on the images, and jumps to the page containing a tapped result.
+- Line boxes are normalized with the stored reference bitmap size, so they map onto any
+  displayed size (same `ContentScale.Fit` math as the crop overlay).
 
 ## PDF export
 

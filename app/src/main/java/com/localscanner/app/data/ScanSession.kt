@@ -1,5 +1,6 @@
 package com.localscanner.app.data
 
+import com.localscanner.app.domain.QuadF
 import java.io.File
 
 /**
@@ -17,6 +18,15 @@ class ScanSession {
     val rawFiles = mutableListOf<File>()
     val warpedFiles = mutableListOf<File>()
 
+    /**
+     * Live-view quad hints parallel to [rawFiles]. The analyzer saw the page
+     * edges perfectly right before the shutter fired; the crop stage uses the
+     * hint when still-photo detection fails (aspect-aware).
+     */
+    data class RawHint(val quad: QuadF, val aspect: Float)
+
+    val rawHints = mutableListOf<RawHint?>()
+
     /** True while the user is importing from the gallery (crop stage skipped). */
     var importMode = false
 
@@ -28,8 +38,10 @@ class ScanSession {
 
     fun newWarpedFile(): File = File(workDir, "warp_${System.currentTimeMillis()}_${warpedFiles.size}.jpg")
 
-    fun addRaw(file: File) {
+    fun addRaw(file: File, hint: RawHint? = null) {
         rawFiles.add(file)
+        while (rawHints.size < rawFiles.size - 1) rawHints.add(null)
+        rawHints.add(hint)
     }
 
     fun addWarped(file: File) {
@@ -40,6 +52,7 @@ class ScanSession {
 
     fun reset() {
         rawFiles.clear()
+        rawHints.clear()
         warpedFiles.clear()
         importMode = false
         targetDocId = null

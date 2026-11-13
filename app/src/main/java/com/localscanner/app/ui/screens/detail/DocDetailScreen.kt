@@ -61,7 +61,7 @@ fun DocDetailScreen(
     docId: String,
     onBack: () -> Unit,
     onExportPdf: () -> Unit,
-    onOpenOcr: () -> Unit,
+    onOpenViewer: () -> Unit,
     onAddPages: () -> Unit,
 ) {
     val app = androidx.compose.ui.platform.LocalContext.current.applicationContext as android.app.Application
@@ -72,7 +72,6 @@ fun DocDetailScreen(
 
     val doc by vm.doc.collectAsState()
     val pages by vm.pages.collectAsState()
-    val ocrProgress by vm.ocrProgress.collectAsState()
 
     var showRename by remember { mutableStateOf(false) }
     var showMove by remember { mutableStateOf(false) }
@@ -123,28 +122,13 @@ fun DocDetailScreen(
                     Icon(Icons.Outlined.PictureAsPdf, contentDescription = null)
                     Text("Export PDF", modifier = Modifier.padding(start = 4.dp))
                 }
-                OutlinedButton(onClick = onOpenOcr, modifier = Modifier.weight(1f)) {
+                OutlinedButton(onClick = onOpenViewer, modifier = Modifier.weight(1f)) {
                     Icon(Icons.Filled.TextFields, contentDescription = null)
-                    Text("OCR", modifier = Modifier.padding(start = 4.dp))
+                    Text("Text", modifier = Modifier.padding(start = 4.dp))
                 }
                 OutlinedButton(onClick = onAddPages, modifier = Modifier.weight(1f)) {
                     Icon(Icons.Filled.Add, contentDescription = null)
                     Text("Add pages", modifier = Modifier.padding(start = 4.dp))
-                }
-            }
-
-            if (ocrProgress != null) {
-                Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-                    Text(
-                        "Running OCR... ${ocrProgress}/${pages.size} pages",
-                        style = MaterialTheme.typography.labelMedium,
-                    )
-                    LinearProgressIndicator(
-                        progress = {
-                            if (pages.isEmpty()) 0f else (ocrProgress ?: 0) / pages.size.toFloat()
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
                 }
             }
 
@@ -199,12 +183,6 @@ fun DocDetailScreen(
             onDelete = { vm.deletePage(page) },
             onMove = { delta -> vm.movePage(page, delta) },
         )
-    }
-    vm.ocrError?.let { error ->
-        Snackbar(
-            modifier = Modifier.padding(16.dp),
-            action = { TextButton(onClick = { vm.dismissOcrError() }) { Text("OK") } },
-        ) { Text(error) }
     }
 }
 

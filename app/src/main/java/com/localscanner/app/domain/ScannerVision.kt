@@ -5,6 +5,8 @@ import org.opencv.android.Utils
 import org.opencv.core.Core
 import org.opencv.core.CvType
 import org.opencv.core.Mat
+import org.opencv.core.MatOfFloat
+import org.opencv.core.MatOfInt
 import org.opencv.core.MatOfPoint
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.Point
@@ -21,9 +23,21 @@ import kotlin.math.min
  */
 object ScannerVision {
 
+    /** Minimum share of image area a plausible document quad must cover. */
+    private const val MIN_QUAD_AREA = 0.08f
+
     /**
      * Detects the dominant document quad in the bitmap.
      * Returns a quad in normalized [0..1] coordinates, or null.
+     *
+     * Robustness strategy (photos are noisier than the live preview):
+     *  1. Multi-pass Canny - adaptive thresholds derived from the luminance
+     *     median, plus two fixed fallbacks, so dim/bright pages still yield edges.
+     *  2. Morphological close to connect broken document outlines.
+     *  3. Convex 4-point approximation preferred (top contours, area >= 8%).
+     *  4. If no clean quad is found, the minimum-area rotated rect of the
+     *     largest contour is used - CamScanner-style fallback that still crops
+     *     and straightens instead of degrading to the full frame.
      */
     fun detectQuad(src: Bitmap, maxDim: Int = 448): QuadF? {
         val scale = min(1f, maxDim.toFloat() / max(src.width, src.height).toFloat())
@@ -33,44 +47,72 @@ object ScannerVision {
 
         val rgba = Mat()
         val gray = Mat()
+        val med = Mat()
         val edges = Mat()
+        val closed = Mat()
         val hierarchy = Mat()
+        var kernel: Mat? = null
         return try {
             Utils.bitmapToMat(scaled, rgba)
             Imgproc.cvtColor(rgba, gray, Imgproc.COLOR_RGBA2GRAY)
             Imgproc.GaussianBlur(gray, gray, Size(5.0, 5.0), 0.0)
-            Imgproc.Canny(gray, edges, 50.0, 150.0)
-            val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(3.0, 3.0))
-            Imgproc.dilate(edges, edges, kernel)
 
-            val contours = mutableListOf<MatOfPoint>()
-            Imgproc.findContours(edges, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+            // Adaptive Canny thresholds from the luminance median (auto-canny heuristic).
+            Imgproc.medianBlur(gray, med, 5)
+            val median = medianLuminance(med)
+            val thresholdSets = mutableListOf<Pair<Double, Double>>()
+            if (median > 8.0) {
+                val low = max(0.0, 0.66 * median)
+                val high = min(255.0, 1.33 * median)
+                if (high > low) thresholdSets.add(low to high)
+            }
+            thresholdSets.add(30.0 to 90.0)
+            thresholdSets.add(50.0 to 150.0)
+
+            val k = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(5.0, 5.0))
+            kernel = k
             val imgArea = w.toDouble() * h.toDouble()
             var best: QuadF? = null
-            var bestArea = imgArea * 0.15
+            var bestArea = 0.0
 
-            contours.sortedByDescending { Imgproc.contourArea(it) }.take(6).forEach { contour ->
-                val c2f = MatOfPoint2f(*contour.toArray())
-                val approx = MatOfPoint2f()
+            for ((low, high) in thresholdSets) {
+                Imgproc.Canny(gray, edges, low, high)
+                Imgproc.dilate(edges, edges, kernel)
+                Imgproc.morphologyEx(edges, closed, Imgproc.MORPH_CLOSE, kernel)
+
+                val contours = mutableListOf<MatOfPoint>()
                 try {
-                    val peri = Imgproc.arcLength(c2f, true)
-                    Imgproc.approxPolyDP(c2f, approx, 0.02 * peri, true)
-                    val area = Imgproc.contourArea(approx)
-                    if (approx.total() == 4L && area >= bestArea &&
-                        Imgproc.isContourConvex(MatOfPoint(*approx.toArray()))
-                    ) {
-                        val pts = approx.toList().map { Pt((it.x / w).toFloat(), (it.y / h).toFloat()) }
-                        val quad = QuadF.ordered(pts)
-                        if (quad != null && quad.isPlausible(0.10f)) {
+                    Imgproc.findContours(closed, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+                    val candidates = contours
+                        .sortedByDescending { Imgproc.contourArea(it) }
+                        .take(10)
+                        .filter { Imgproc.contourArea(it) >= imgArea * MIN_QUAD_AREA }
+                    for (contour in candidates) {
+                        val quad = quadFromContour(contour, w, h) ?: continue
+                        val area = Imgproc.contourArea(contour)
+                        if (area > bestArea) {
                             best = quad
                             bestArea = area
                         }
                     }
                 } finally {
-                    c2f.release()
-                    approx.release()
-                    contour.release()
+                    contours.forEach { it.release() }
                 }
+                if (best != null) return best
+            }
+
+            // Last resort: min-area rotated rect of the largest contour.
+            Imgproc.Canny(gray, edges, 25.0, 75.0)
+            Imgproc.dilate(edges, edges, kernel)
+            val contours = mutableListOf<MatOfPoint>()
+            try {
+                Imgproc.findContours(edges, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+                val largest = contours.maxByOrNull { Imgproc.contourArea(it) }
+                if (largest != null && Imgproc.contourArea(largest) >= imgArea * MIN_QUAD_AREA) {
+                    best = rectFromContour(largest, w, h)
+                }
+            } finally {
+                contours.forEach { it.release() }
             }
             best
         } catch (t: Throwable) {
@@ -78,9 +120,75 @@ object ScannerVision {
         } finally {
             rgba.release()
             gray.release()
+            med.release()
             edges.release()
+            closed.release()
             hierarchy.release()
+            kernel?.release()
             if (scaled !== src) scaled.recycle()
+        }
+    }
+
+    /** Median of the gray histogram (robust against outliers than the mean). */
+    private fun medianLuminance(gray: Mat): Double {
+        val size = 256
+        val hist = Mat()
+        return try {
+            Imgproc.calcHist(listOf(gray), MatOfInt(0), Mat(), hist, MatOfInt(size), MatOfFloat(0f, 256f))
+            val total = gray.total()
+            val data = FloatArray(size)
+            hist.get(0, 0, data)
+            var acc = 0.0
+            var median = 0.0
+            for (i in 0 until size) {
+                acc += data[i].toDouble()
+                if (acc >= total / 2.0) {
+                    median = i.toDouble()
+                    break
+                }
+            }
+            median
+        } catch (t: Throwable) {
+            0.0
+        } finally {
+            hist.release()
+        }
+    }
+
+    /** Convex 4-point quad from a contour, in normalized coordinates. */
+    private fun quadFromContour(contour: MatOfPoint, w: Int, h: Int): QuadF? {
+        val c2f = MatOfPoint2f(*contour.toArray())
+        val approx = MatOfPoint2f()
+        return try {
+            val peri = Imgproc.arcLength(c2f, true)
+            Imgproc.approxPolyDP(c2f, approx, 0.02 * peri, true)
+            if (approx.total() != 4L) return null
+            if (!Imgproc.isContourConvex(MatOfPoint(*approx.toArray()))) return null
+            val pts = approx.toList().map { Pt((it.x / w).toFloat(), (it.y / h).toFloat()) }
+            val quad = QuadF.ordered(pts) ?: return null
+            if (!quad.isPlausible(MIN_QUAD_AREA)) null else quad
+        } catch (t: Throwable) {
+            null
+        } finally {
+            c2f.release()
+            approx.release()
+        }
+    }
+
+    /** Minimum-area rotated rect around the contour, as a fallback quad. */
+    private fun rectFromContour(contour: MatOfPoint, w: Int, h: Int): QuadF? {
+        val c2f = MatOfPoint2f(*contour.toArray())
+        return try {
+            val rect = Imgproc.minAreaRect(c2f)
+            val pts = arrayOf(Point(), Point(), Point(), Point())
+            rect.points(pts)
+            val quadPts = pts.map { Pt((it.x / w).toFloat(), (it.y / h).toFloat()) }
+            val quad = QuadF.ordered(quadPts) ?: return null
+            if (!quad.isPlausible(MIN_QUAD_AREA)) null else quad
+        } catch (t: Throwable) {
+            null
+        } finally {
+            c2f.release()
         }
     }
 

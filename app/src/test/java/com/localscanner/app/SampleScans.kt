@@ -182,7 +182,7 @@ object SampleScans {
         val bullet = Paint(p.fill).apply { color = INK }
         val items = listOf(
             "Sprint 42 scope confirmed", "OCR Bengali accuracy at 94%",
-            "PDF export size reduced 30%", "Auto-capture tuned for A4 sheets",
+            "PDF export size reduced 30%", "Auto-crop tuned for A4 sheets",
             "Next review: 19 March",
         )
         var y = 330f

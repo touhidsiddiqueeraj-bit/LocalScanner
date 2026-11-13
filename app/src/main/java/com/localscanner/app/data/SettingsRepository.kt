@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.localscanner.app.domain.CaptureMode
 import com.localscanner.app.domain.FilterType
 import com.localscanner.app.domain.OcrEngineOption
 import com.localscanner.app.domain.PageOrientation
@@ -17,7 +18,7 @@ private val Context.dataStore by preferencesDataStore(name = "settings")
 data class AppSettings(
     val themeMode: String = "system",       // system | light | dark
     val defaultFilter: FilterType = FilterType.MAGIC_COLOR,
-    val autoCapture: Boolean = true,
+    val captureMode: CaptureMode = CaptureMode.SINGLE,
     val pdfPageSize: PdfPage = PdfPage.A4,
     val pdfOrientation: PageOrientation = PageOrientation.AUTO,
     val pdfQuality: Int = 80,
@@ -30,7 +31,7 @@ class SettingsRepository(private val context: Context) {
     private object Keys {
         val THEME = stringPreferencesKey("theme_mode")
         val DEFAULT_FILTER = stringPreferencesKey("default_filter")
-        val AUTO_CAPTURE = booleanPreferencesKey("auto_capture")
+        val CAPTURE_MODE = stringPreferencesKey("capture_mode")
         val PDF_PAGE_SIZE = stringPreferencesKey("pdf_page_size")
         val PDF_ORIENTATION = stringPreferencesKey("pdf_orientation")
         val PDF_QUALITY = stringPreferencesKey("pdf_quality")
@@ -43,7 +44,7 @@ class SettingsRepository(private val context: Context) {
             themeMode = p[Keys.THEME] ?: "system",
             defaultFilter = p[Keys.DEFAULT_FILTER]?.let { runCatching { FilterType.valueOf(it) }.getOrNull() }
                 ?: FilterType.MAGIC_COLOR,
-            autoCapture = p[Keys.AUTO_CAPTURE] ?: true,
+            captureMode = p[Keys.CAPTURE_MODE]?.let { CaptureMode.byId(it) } ?: CaptureMode.SINGLE,
             pdfPageSize = p[Keys.PDF_PAGE_SIZE]?.let { runCatching { PdfPage.valueOf(it) }.getOrNull() }
                 ?: PdfPage.A4,
             pdfOrientation = p[Keys.PDF_ORIENTATION]?.let { runCatching { PageOrientation.valueOf(it) }.getOrNull() }
@@ -57,7 +58,7 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setThemeMode(mode: String) = context.dataStore.edit { it[Keys.THEME] = mode }
     suspend fun setDefaultFilter(filter: FilterType) = context.dataStore.edit { it[Keys.DEFAULT_FILTER] = filter.name }
-    suspend fun setAutoCapture(enabled: Boolean) = context.dataStore.edit { it[Keys.AUTO_CAPTURE] = enabled }
+    suspend fun setCaptureMode(mode: CaptureMode) = context.dataStore.edit { it[Keys.CAPTURE_MODE] = mode.id }
     suspend fun setPdfPageSize(size: PdfPage) = context.dataStore.edit { it[Keys.PDF_PAGE_SIZE] = size.name }
     suspend fun setPdfOrientation(o: PageOrientation) = context.dataStore.edit { it[Keys.PDF_ORIENTATION] = o.name }
     suspend fun setPdfQuality(q: Int) = context.dataStore.edit { it[Keys.PDF_QUALITY] = q.toString() }

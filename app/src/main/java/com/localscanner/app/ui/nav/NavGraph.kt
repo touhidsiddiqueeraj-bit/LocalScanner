@@ -13,9 +13,9 @@ import com.localscanner.app.ui.screens.crop.CropScreen
 import com.localscanner.app.ui.screens.detail.DocDetailScreen
 import com.localscanner.app.ui.screens.filter.FilterScreen
 import com.localscanner.app.ui.screens.home.HomeScreen
-import com.localscanner.app.ui.screens.ocr.OcrScreen
 import com.localscanner.app.ui.screens.pdf.PdfExportScreen
 import com.localscanner.app.ui.screens.settings.SettingsScreen
+import com.localscanner.app.ui.screens.viewer.PageViewerScreen
 
 object Routes {
     const val HOME = "home"
@@ -24,12 +24,12 @@ object Routes {
     const val FILTER = "filter"
     const val DOC = "doc/{docId}"
     const val PDF = "pdf/{docId}"
-    const val OCR = "ocr/{docId}"
+    const val VIEWER = "viewer/{docId}"
     const val SETTINGS = "settings"
 
     fun doc(docId: String) = "doc/$docId"
     fun pdf(docId: String) = "pdf/$docId"
-    fun ocr(docId: String) = "ocr/$docId"
+    fun viewer(docId: String) = "viewer/$docId"
 }
 
 @Composable
@@ -76,7 +76,7 @@ fun AppNavGraph(container: AppContainer) {
                 docId = docId,
                 onBack = { nav.popBackStack() },
                 onExportPdf = { nav.navigate(Routes.pdf(docId)) },
-                onOpenOcr = { nav.navigate(Routes.ocr(docId)) },
+                onOpenViewer = { nav.navigate(Routes.viewer(docId)) },
                 onAddPages = { nav.navigate(Routes.CAPTURE) },
             )
         }
@@ -93,11 +93,11 @@ fun AppNavGraph(container: AppContainer) {
         }
 
         composable(
-            Routes.OCR,
+            Routes.VIEWER,
             arguments = listOf(navArgument("docId") { type = NavType.StringType }),
         ) { entry ->
             val docId = entry.arguments?.getString("docId") ?: return@composable
-            OcrScreen(
+            PageViewerScreen(
                 docId = docId,
                 onBack = { nav.popBackStack() },
             )

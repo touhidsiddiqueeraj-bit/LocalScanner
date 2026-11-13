@@ -13,16 +13,15 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.localscanner.app.LocalScannerApp
 import com.localscanner.app.data.ScanSession
+import com.localscanner.app.domain.CaptureMode
 import com.localscanner.app.domain.QuadF
 import com.localscanner.app.domain.ScannerVision
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.File
 import java.nio.ByteBuffer
-import java.util.concurrent.Executor
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import kotlin.math.abs
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -41,7 +40,7 @@ class CaptureViewModel(app: Application) : AndroidViewModel(app) {
         .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
         .build()
 
-    val analysisExecutor: java.util.concurrent.ExecutorService = Executors.newSingleThreadExecutor()
+    val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
 
     /** Document quad in normalized coordinates, updated live by the analyzer. */
     var detectedQuad: QuadF? by mutableStateOf(null)
@@ -57,23 +56,26 @@ class CaptureViewModel(app: Application) : AndroidViewModel(app) {
     var capturing: Boolean by mutableStateOf(false)
         private set
 
-    var autoCaptureEnabled: Boolean by mutableStateOf(true)
+    /** Single / Batch shooting mode (persisted in settings). */
+    var captureMode: CaptureMode by mutableStateOf(CaptureMode.SINGLE)
+        private set
+
+    /** Set once a page is captured in SINGLE mode; the screen navigates onward. */
+    var singleCaptureDone: Boolean by mutableStateOf(false)
+        private set
+
     var flashMode: Int by mutableStateOf(ImageCapture.FLASH_MODE_OFF)
         private set
 
-    /** Increments whenever the auto-capture condition fires; UI observes it. */
-    var autoTrigger: Long by mutableStateOf(0L)
-        private set
-
-    private var lastQuad: QuadF? = null
-    private var stableFrames = 0
-    private var lastCaptureAt = 0L
     private var tone: ToneGenerator? = null
 
     init {
         // Carry default from settings; a fresh entry clears finished sessions.
         if (!session.hasWork()) {
             session.reset()
+        }
+        viewModelScope.launch {
+            captureMode = container.settings.settings.first().captureMode
         }
     }
 
@@ -82,11 +84,16 @@ class CaptureViewModel(app: Application) : AndroidViewModel(app) {
         imageCapture.flashMode = mode
     }
 
+    fun updateCaptureMode(mode: CaptureMode) {
+        captureMode = mode
+        viewModelScope.launch { container.settings.setCaptureMode(mode) }
+    }
+
     fun beginScan() {
         if (!session.hasWork()) session.reset()
     }
 
-    /** Analyzer callback: RGBA frame -> bitmap -> quad detection -> stability. */
+    /** Analyzer callback: RGBA frame -> bitmap -> quad detection (live edges only). */
     fun analyze(proxy: ImageProxy) {
         val bmp = try {
             proxyToBitmap(proxy)
@@ -98,34 +105,19 @@ class CaptureViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         frameAspect = bmp.width.toFloat() / bmp.height.toFloat()
-        val quad = ScannerVision.detectQuad(bmp, 384)
+        detectedQuad = ScannerVision.detectQuad(bmp, 384)
         bmp.recycle()
-        detectedQuad = quad
-        updateStability(quad)
         proxy.close()
-    }
-
-    private fun updateStability(quad: QuadF?) {
-        val prev = lastQuad
-        val stable = quad != null && prev != null &&
-            QuadF.centroidDistance(quad, prev) <= 0.035f &&
-            abs(quad.area() - prev.area()) <= 0.05f
-        stableFrames = if (stable) stableFrames + 1 else 0
-        lastQuad = quad
-
-        if (autoCaptureEnabled && stableFrames >= AUTO_STABLE_FRAMES && !capturing &&
-            quad != null && quad.area() >= MIN_DOC_AREA &&
-            System.currentTimeMillis() - lastCaptureAt > AUTO_COOLDOWN_MS
-        ) {
-            lastCaptureAt = System.currentTimeMillis()
-            autoTrigger++
-        }
     }
 
     fun capture() {
         if (capturing) return
         capturing = true
         val file: File = session.newRawFile()
+        // Keep the live-view quad as a hint for the crop stage: the analyzer
+        // frame and the JPEG usually share the same 4:3 aspect, so normalized
+        // coordinates transfer 1:1 when the still-photo detection fails.
+        val hint = detectedQuad?.let { ScanSession.RawHint(it, frameAspect) }
         val options = ImageCapture.OutputFileOptions.Builder(file).build()
         val context = getApplication<Application>()
         imageCapture.takePicture(
@@ -133,10 +125,11 @@ class CaptureViewModel(app: Application) : AndroidViewModel(app) {
             androidx.core.content.ContextCompat.getMainExecutor(context),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                    session.addRaw(file)
+                    session.addRaw(file, hint)
                     pagesCaptured = session.rawFiles.size
                     capturing = false
                     beep()
+                    if (captureMode == CaptureMode.SINGLE) singleCaptureDone = true
                 }
 
                 override fun onError(exception: ImageCaptureException) {
@@ -145,6 +138,10 @@ class CaptureViewModel(app: Application) : AndroidViewModel(app) {
                 }
             },
         )
+    }
+
+    fun consumeSingleCaptureDone() {
+        singleCaptureDone = false
     }
 
     fun finish() {
@@ -201,8 +198,7 @@ class CaptureViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
-        const val AUTO_STABLE_FRAMES = 10
+        /** Live-view frames below this area ratio are unlikely to be documents. */
         const val MIN_DOC_AREA = 0.18f
-        const val AUTO_COOLDOWN_MS = 2_500L
     }
 }

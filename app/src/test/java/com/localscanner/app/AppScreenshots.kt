@@ -9,22 +9,22 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -37,6 +37,9 @@ import androidx.test.core.app.ApplicationProvider
 import com.github.takahirom.roborazzi.RobolectricDeviceQualifiers
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.localscanner.app.data.DocsRepository
+import com.localscanner.app.domain.IRect
+import com.localscanner.app.domain.OcrLine
+import com.localscanner.app.domain.OcrLinesCodec
 import com.localscanner.app.domain.Pt
 import com.localscanner.app.domain.QuadF
 import com.localscanner.app.ui.components.EdgeOverlay
@@ -46,9 +49,9 @@ import com.localscanner.app.ui.screens.detail.DocDetailScreen
 import com.localscanner.app.ui.screens.filter.FilterScreen
 import com.localscanner.app.ui.screens.filter.FilterViewModel
 import com.localscanner.app.ui.screens.home.HomeScreen
-import com.localscanner.app.ui.screens.ocr.OcrScreen
 import com.localscanner.app.ui.screens.pdf.PdfExportScreen
 import com.localscanner.app.ui.screens.settings.SettingsScreen
+import com.localscanner.app.ui.screens.viewer.PageViewerScreen
 import com.localscanner.app.ui.theme.LocalScannerTheme
 import com.localscanner.app.ui.theme.ScanOverlayColor
 import kotlinx.coroutines.runBlocking
@@ -125,6 +128,13 @@ class AppScreenshots {
             )
 
             val p1 = repo.getPages(d1.id)
+            val agreementLines = listOf(
+                OcrLine("RENTAL AGREEMENT", IRect(84, 80, 760, 150)),
+                OcrLine("Flat 4B, Dhanmondi 27, Dhaka 1209", IRect(84, 150, 660, 195)),
+                OcrLine("1. Parties", IRect(84, 250, 300, 305)),
+                OcrLine("Monthly rent: BDT 18,500", IRect(84, 505, 640, 570)),
+                OcrLine("3. Security Deposit", IRect(84, 770, 470, 825)),
+            )
             repo.setOcr(
                 p1[0],
                 "RENTAL AGREEMENT\nThis agreement is made on 12 March 2026 between\n" +
@@ -132,7 +142,7 @@ class AppScreenshots {
                     "Monthly rent: BDT 18,500, payable by the 5th of each month.\n" +
                     "Security deposit: two months' rent.",
                 "tess",
-                null,
+                OcrLinesCodec.encode(1000, 1400, agreementLines),
             )
             val p3 = repo.getPages(d3.id)
             repo.setOcr(
@@ -168,7 +178,7 @@ class AppScreenshots {
 
     @Test
     fun captureScreen() {
-        light { CaptureShotSim(pages = 2, autoCaptureOn = true) }
+        light { CaptureShotSim(pages = 2, batchMode = true) }
         waitForText("2 pages")
         capture("capture", settleMs = 1_500)
     }
@@ -198,18 +208,18 @@ class AppScreenshots {
     fun docDetailScreen() {
         val docId = seedLibrary()
         light {
-            DocDetailScreen(docId, onBack = {}, onExportPdf = {}, onOpenOcr = {}, onAddPages = {})
+            DocDetailScreen(docId, onBack = {}, onExportPdf = {}, onOpenViewer = {}, onAddPages = {})
         }
         waitForText("Rental Agreement - Flat 4B")
         capture("doc_detail", settleMs = 3_000)
     }
 
     @Test
-    fun ocrScreen() {
+    fun viewerScreen() {
         val docId = seedLibrary()
-        light { OcrScreen(docId, onBack = {}) }
-        waitForText("RENTAL AGREEMENT")
-        capture("ocr", settleMs = 2_000)
+        light { PageViewerScreen(docId, onBack = {}) }
+        waitForText("Page 1 of 2")
+        capture("viewer", settleMs = 3_000)
     }
 
     @Test
@@ -231,10 +241,11 @@ class AppScreenshots {
 /**
  * Stand-in for the live camera screen used by the screenshot suite. Robolectric
  * has no camera HAL, so this renders a simulated desk scene with the REAL
- * EdgeOverlay component and the same control layout as CaptureScreen.
+ * EdgeOverlay component and the same control layout as CaptureScreen
+ * (Single / Batch mode pills, flash, shutter).
  */
 @Composable
-private fun CaptureShotSim(pages: Int, autoCaptureOn: Boolean) {
+private fun CaptureShotSim(pages: Int, batchMode: Boolean) {
     val quad = QuadF(
         tl = Pt(0.14f, 0.10f),
         tr = Pt(0.86f, 0.08f),
@@ -302,7 +313,7 @@ private fun CaptureShotSim(pages: Int, autoCaptureOn: Boolean) {
             }
         }
 
-        // Left rail
+        // Left rail: flash only (auto capture was removed entirely)
         Column(
             modifier = Modifier
                 .align(Alignment.CenterStart)
@@ -312,18 +323,39 @@ private fun CaptureShotSim(pages: Int, autoCaptureOn: Boolean) {
             IconButton(onClick = {}) {
                 Icon(Icons.Filled.FlashOn, contentDescription = "Flash", tint = Color.White)
             }
-            Icon(Icons.Filled.Bolt, contentDescription = null, tint = ScanOverlayColor)
-            Switch(checked = autoCaptureOn, onCheckedChange = {})
         }
 
-        // Shutter
-        Row(
+        // Bottom: mode pills + shutter
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 28.dp),
-            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
+                .padding(bottom = 20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            Row(
+                modifier = Modifier
+                    .background(Color.Black.copy(alpha = 0.55f), androidx.compose.foundation.shape.RoundedCornerShape(22.dp))
+                    .border(1.dp, Color.White.copy(alpha = 0.25f), androidx.compose.foundation.shape.RoundedCornerShape(22.dp))
+                    .padding(4.dp),
+                horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(4.dp),
+            ) {
+                listOf("Single" to !batchMode, "Batch" to batchMode).forEach { (label, selected) ->
+                    Box(
+                        modifier = Modifier
+                            .clip(androidx.compose.foundation.shape.RoundedCornerShape(18.dp))
+                            .background(if (selected) ScanOverlayColor else Color.Transparent)
+                            .padding(horizontal = 22.dp, vertical = 8.dp),
+                    ) {
+                        Text(
+                            text = label,
+                            color = if (selected) Color.Black else Color.White,
+                            style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(18.dp))
             Box(
                 modifier = Modifier
                     .size(84.dp)
@@ -332,17 +364,6 @@ private fun CaptureShotSim(pages: Int, autoCaptureOn: Boolean) {
                     .size(68.dp)
                     .background(Color.White, CircleShape),
             ) {}
-        }
-
-        if (autoCaptureOn) {
-            Text(
-                text = "Auto-capture on - hold steady",
-                color = Color.White.copy(alpha = 0.85f),
-                style = androidx.compose.material3.MaterialTheme.typography.labelMedium,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 8.dp),
-            )
         }
     }
 }

@@ -11,7 +11,13 @@ First full feature release — local CamScanner-parity scanning, all on-device.
 ### Added
 
 - **Camera capture** with CameraX: live preview, Canny + contour edge detection
-  overlay, stability-based auto-capture, flash toggle, multi-page sessions.
+  overlay, flash toggle, and **Single / Batch shooting modes** (CamScanner-style
+  mode pills; the choice persists in settings).
+- **CamScanner-style auto-crop**: a robust multi-pass quad detector (adaptive
+  Canny thresholds, morphological close, min-area-rect fallback) finds the page
+  on the still photo; Single mode applies the crop automatically and advances,
+  Batch mode gets an "Auto-crop all remaining pages" action. The live-view quad
+  is carried through the shutter as an aspect-aware hint for hard photos.
 - **Crop stage**: draggable corner handles, dimmed mask, re-detect, rotate,
   perspective correction (`warpPerspective`) at up to 2048px.
 - **Enhance stage**: Magic Color (illumination normalization + CLAHE), Grayscale,
@@ -20,21 +26,25 @@ First full feature release — local CamScanner-parity scanning, all on-device.
 - **Gallery import** (Photo Picker, up to 20 images) that skips cropping.
 - **Document management**: Room-backed documents and pages, folders, rename,
   move, delete, page reorder/rotate/delete, cover thumbnails (Coil).
-- **OCR**: ML Kit v2 (Latin, bundled) and Tesseract 5 (`ben+eng`, traineddata in
-  the APK), editable per-page text, copy/share/`.txt` export.
+- **OCR on the page image**: ML Kit v2 (Latin, bundled) and Tesseract 5
+  (`ben+eng`, traineddata in the APK) — no separate OCR screen. The page viewer
+  draws recognized lines on the image: tap a line to select and copy it, search
+  highlights matching lines on every page and jumps to them, a bottom sheet
+  offers selectable full text with copy/`.txt`/share.
 - **Full-text search** across document titles and OCR text.
 - **PDF export**: Android `PdfDocument` for image PDFs and PDFBox for searchable
   PDFs with an invisible OCR text layer (embedded Noto Sans Bengali), page size
   presets (A4/Letter/Legal/A3/A5/fit), orientation, quality presets, share /
   save to Downloads / print.
-- **Settings**: theme (system/light/dark), default filter, auto-capture toggle,
+- **Settings**: theme (system/light/dark), default filter, default capture mode,
   default PDF options, default OCR engine; DataStore-backed.
 - **CI/CD**: `ci.yml` (build + tests + lint + APK artifact on push/PR),
   `release.yml` (signed release APK + GitHub Release on `v*` tags),
   `screenshots.yml` (device-free UI screenshots committed to `docs/screenshots/`).
-- **Testing**: 19 JVM unit tests for quad geometry, page-size calculation, text
-  utilities and the OCR line codec; Robolectric + Roborazzi screenshot tests that
-  render the real Compose screens to PNG without an emulator.
+- **Testing**: 20 JVM unit tests for quad geometry, page-size calculation, text
+  utilities and the OCR line codec (incl. the v2 on-image format); Robolectric +
+  Roborazzi screenshot tests that render the real Compose screens to PNG
+  without an emulator.
 
 ### Notes
 

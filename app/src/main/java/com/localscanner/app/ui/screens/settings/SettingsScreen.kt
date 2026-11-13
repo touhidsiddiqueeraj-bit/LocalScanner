@@ -70,17 +70,6 @@ fun SettingsScreen(onBack: () -> Unit, vm: SettingsViewModel = viewModel()) {
             }
 
             SectionCard("Scanning") {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Auto-capture", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            "Automatically shoots when a document is detected and the camera is steady.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Switch(checked = s.autoCapture, onCheckedChange = { vm.setAutoCapture(it) })
-                }
                 Text("Default filter", style = MaterialTheme.typography.labelLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterType.entries.forEach { f ->

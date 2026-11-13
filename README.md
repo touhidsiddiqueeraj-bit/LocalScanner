@@ -24,8 +24,8 @@ models, so nothing is downloaded at runtime.
 | --- | --- | --- |
 | ![Home](docs/screenshots/home_light.png) | ![Capture](docs/screenshots/capture.png) | ![Crop](docs/screenshots/crop.png) |
 | *Documents & search* | *Live edge detection* | *Manual corners* |
-| ![Filter](docs/screenshots/filter.png) | ![Detail](docs/screenshots/doc_detail.png) | ![OCR](docs/screenshots/ocr.png) |
-| *Magic Color enhance* | *Multi-page doc* | *Editable OCR text* |
+| ![Filter](docs/screenshots/filter.png) | ![Detail](docs/screenshots/doc_detail.png) | ![Viewer](docs/screenshots/viewer.png) |
+| *Magic Color enhance* | *Multi-page doc* | *Text on the page (selectable & searchable)* |
 | ![PDF](docs/screenshots/pdf.png) | ![Home dark](docs/screenshots/home_dark.png) | ![Settings dark](docs/screenshots/settings_dark.png) |
 | *Searchable PDF export* | *Dark mode* | *Settings* |
 
@@ -39,8 +39,8 @@ reconstruction using the real edge-overlay component (runners have no camera).
 | CamScanner capability | LocalScanner implementation |
 | --- | --- |
 | Auto edge detection while framing | OpenCV Canny + contour + `approxPolyDP` quad finder, live overlay on the CameraX preview |
-| Auto-capture (auto shutter) | Stability detector: fires the shutter when a document quad stays stable for ~1s (toggleable) |
-| Manual corner adjustment ("smart crop") | Draggable corner handles with dimmed background mask |
+| Single & batch shooting modes | CamScanner-style mode pills in the camera UI; Single auto-crops the page and jumps straight to enhancement, Batch keeps snapping pages for a combined review |
+| Manual corner adjustment ("smart crop") | Draggable corner handles with dimmed background mask; auto-crop applies the detected quad automatically and an "Auto-crop all" action processes every remaining page |
 | Perspective correction / de-skew | OpenCV `getPerspectiveTransform` + `warpPerspective` at up to 2048px |
 | Magic Color / shadow removal | Illumination-normalization (background division) + CLAHE local contrast + saturation boost |
 | Grayscale & Black & White modes | Adaptive-threshold B&W with auto block size, classic grayscale |
@@ -49,8 +49,8 @@ reconstruction using the real edge-overlay component (runners have no camera).
 | Gallery import | Android Photo Picker (multi-select, up to 20 images) |
 | OCR (English) | ML Kit v2 bundled Latin model — fast, on-device |
 | OCR (Bengali + English) | Tesseract 5 (`ben+eng`, tessdata_fast) bundled in the APK — on-device |
-| Editable OCR text | Editable per-page text, copy, share, `.txt` export |
-| Full-text search | Search across document titles *and* OCR text (Room + SQLite) |
+| Selectable OCR text on the page | No separate OCR screen: recognized lines are drawn on the page image, tap a line to select and copy it |
+| Searchable OCR text | In-viewer search highlights matching lines on every page and jumps to them; full-text search covers titles and OCR text (Room + SQLite) |
 | Searchable PDF export | PDFBox: page image + **invisible OCR text layer** (selectable/searchable, Bengali font embedded) |
 | PDF page sizes | Fit-to-image, A4, Letter, Legal, A3, A5 + auto/portrait/landscape |
 | PDF compression | High / Medium / Small quality presets |
@@ -79,13 +79,13 @@ app/
 ├── data/            Room entities/DAOs, repository, DataStore settings, scan session
 ├── domain/          ScannerVision (OpenCV), OcrEngine (ML Kit), TessOcr, PdfExporter,
 │                    PageSizeCalculator, Quad geometry (all unit-testable core logic)
-├── ui/              Compose screens: home → capture → crop → filter → detail
-│                    + PDF export, OCR editor, settings
+├── ui/              Compose screens: home → capture (Single/Batch) → crop → filter → detail
+│                    + page viewer (on-image OCR text), PDF export, settings
 └── util/            Image I/O with EXIF, sharing/saving/printing
 ```
 
-Scan flow (like CamScanner): **Capture → Crop → Enhance → Save**. OCR and PDF export are
-on-demand from the document screen.
+Scan flow (like CamScanner): **Capture → Auto-crop → Enhance → Save**. Text (OCR) and PDF
+export are on-demand from the document screen.
 
 ## Building
 

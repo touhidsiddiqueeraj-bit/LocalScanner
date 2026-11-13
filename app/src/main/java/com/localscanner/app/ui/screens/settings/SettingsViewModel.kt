@@ -23,7 +23,6 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setTheme(mode: String) = viewModelScope.launch { settingsRepo.setThemeMode(mode) }
     fun setDefaultFilter(filter: FilterType) = viewModelScope.launch { settingsRepo.setDefaultFilter(filter) }
-    fun setAutoCapture(enabled: Boolean) = viewModelScope.launch { settingsRepo.setAutoCapture(enabled) }
     fun setPageSize(size: PdfPage) = viewModelScope.launch { settingsRepo.setPdfPageSize(size) }
     fun setOrientation(o: PageOrientation) = viewModelScope.launch { settingsRepo.setPdfOrientation(o) }
     fun setQuality(q: Int) = viewModelScope.launch { settingsRepo.setPdfQuality(q) }
