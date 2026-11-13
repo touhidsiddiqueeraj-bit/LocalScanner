@@ -22,8 +22,13 @@ class AppContainer(app: Application) {
     val pageDao = database.pageDao()
     val repository = DocsRepository(app, docDao, pageDao)
     val settings = SettingsRepository(app)
-    val tessOcr = TessOcr(app)
-    val ocr = OcrEngine(app, tessOcr)
+
+    // OCR engines are created on first use: they own JNI-backed objects, so
+    // constructing them lazily keeps JVM-only environments (screenshot tests)
+    // safe and trims cold-start work when the user never opens OCR.
+    val tessOcr: TessOcr by lazy { TessOcr(app) }
+    val ocr: OcrEngine by lazy { OcrEngine(app, tessOcr) }
+
     val pdfExporter = PdfExporter(app)
     val scanSession = ScanSession().apply {
         init(app.filesDir, app.cacheDir)

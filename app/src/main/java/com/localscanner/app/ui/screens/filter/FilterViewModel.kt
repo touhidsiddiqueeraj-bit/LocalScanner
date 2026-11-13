@@ -47,6 +47,18 @@ class FilterViewModel(app: Application) : AndroidViewModel(app) {
     val pageCount: Int get() = session.warpedFiles.size
     val hasPages: Boolean get() = session.warpedFiles.isNotEmpty()
 
+    /**
+     * Screenshot-test hook: Robolectric has no OpenCV native library, so tests
+     * preload the preview directly and loadCurrent() becomes a no-op.
+     */
+    internal var screenshotSeeded = false
+
+    internal fun seedForScreenshot(bmp: Bitmap) {
+        screenshotSeeded = true
+        preview = bmp
+        busy = false
+    }
+
     data class PageEdit(val filter: FilterType, val brightness: Int, val contrast: Int)
 
     init {
@@ -59,6 +71,7 @@ class FilterViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun loadCurrent() {
+        if (screenshotSeeded) return
         viewModelScope.launch {
             busy = true
             val file = session.warpedFiles.getOrNull(index) ?: return@launch

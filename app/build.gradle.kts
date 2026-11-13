@@ -74,6 +74,12 @@ android {
         abortOnError = false
         checkReleaseBuilds = false
     }
+    testOptions {
+        unitTests {
+            // Robolectric needs the merged resources/manifest to render real UI.
+            isIncludeAndroidResources = true
+        }
+    }
 }
 
 dependencies {
@@ -131,4 +137,21 @@ dependencies {
     // Unit tests
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
+
+    // Screenshot tests: Robolectric renders the real Compose UI to PNG on the JVM,
+    // no emulator or device required (used to generate docs/screenshots).
+    testImplementation("org.robolectric:robolectric:4.13")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi:1.26.0")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.26.0")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
+}
+
+tasks.withType<Test>().configureEach {
+    // Robolectric + Compose rendering needs more than the default 512m heap.
+    maxHeapSize = "1792m"
+    // Allow a pre-warmed android-all jar cache (set ROBOLECTRIC_CACHE_DIR locally).
+    System.getenv("ROBOLECTRIC_CACHE_DIR")?.let {
+        systemProperty("robolectric.dependency.cache.dir", it)
+    }
 }

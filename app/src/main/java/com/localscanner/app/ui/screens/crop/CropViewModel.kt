@@ -33,6 +33,19 @@ class CropViewModel(app: Application) : AndroidViewModel(app) {
     val pageCount: Int get() = session.rawFiles.size
     val hasPages: Boolean get() = session.rawFiles.isNotEmpty()
 
+    /**
+     * Screenshot-test hook: Robolectric has no OpenCV native library, so tests
+     * preload the state directly and loadCurrent() becomes a no-op.
+     */
+    internal var screenshotSeeded = false
+
+    internal fun seedForScreenshot(bmp: Bitmap, q: QuadF) {
+        screenshotSeeded = true
+        bitmap = bmp
+        quad = q
+        busy = false
+    }
+
     init {
         if (session.rawFiles.isNotEmpty() && session.warpedFiles.isNotEmpty() && session.importMode) {
             // Imported images skip cropping entirely.
@@ -40,6 +53,7 @@ class CropViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun loadCurrent() {
+        if (screenshotSeeded) return
         viewModelScope.launch {
             busy = true
             val file = session.rawFiles.getOrNull(index)
