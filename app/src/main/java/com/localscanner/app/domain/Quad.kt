@@ -107,6 +107,74 @@ data class QuadF(
         return true
     }
 
+    /** Midpoint of the edge starting at corner [i] (0=top, 1=right, 2=bottom, 3=left). */
+    fun edgeMidpoint(i: Int): Pt {
+        val p = points()
+        val a = p[i]
+        val b = p[(i + 1) % 4]
+        return Pt((a.x + b.x) / 2f, (a.y + b.y) / 2f)
+    }
+
+    /**
+     * CamScanner-style edge drag: corner [i] and its clockwise neighbour move
+     * together, translated along the edge's normal by the perpendicular
+     * component of (dx, dy). Returns null when the move would invert or
+     * degenerate the quad.
+     */
+    fun movedEdge(i: Int, dx: Float, dy: Float, minArea: Float = 0.008f): QuadF? {
+        val p = points()
+        val a = p[i]
+        val b = p[(i + 1) % 4]
+        val ex = b.x - a.x
+        val ey = b.y - a.y
+        val len = Math.sqrt((ex * ex + ey * ey).toDouble()).toFloat()
+        if (len < 1e-6f) return null
+        // Unit normal pointing left of the edge direction.
+        val nx = -ey / len
+        val ny = ex / len
+        val proj = dx * nx + dy * ny
+        val tx = nx * proj
+        val ty = ny * proj
+
+        fun clamp(v: Pt): Pt = Pt(v.x + tx, v.y + ty)
+        val moved = when (i) {
+            0 -> copy(tl = clamp(tl), tr = clamp(tr))
+            1 -> copy(tr = clamp(tr), br = clamp(br))
+            2 -> copy(br = clamp(br), bl = clamp(bl))
+            else -> copy(bl = clamp(bl), tl = clamp(tl))
+        }
+        return moved.validIf(minArea)
+    }
+
+    /**
+     * Corner drag with a degeneracy guard: returns null when the move would
+     * collapse or twist the quad past usability.
+     */
+    fun movedCorner(i: Int, dx: Float, dy: Float, minArea: Float = 0.008f): QuadF? {
+        fun mv(p: Pt) = Pt(p.x + dx, p.y + dy)
+        val moved = when (i) {
+            0 -> copy(tl = mv(tl))
+            1 -> copy(tr = mv(tr))
+            2 -> copy(br = mv(br))
+            else -> copy(bl = mv(bl))
+        }
+        return moved.validIf(minArea)
+    }
+
+    private fun validIf(minArea: Float): QuadF? {
+        val pts = points()
+        // Every point must stay inside the image bounds.
+        pts.forEach {
+            if (it.x < -0.02f || it.x > 1.02f || it.y < -0.02f || it.y > 1.02f) return null
+        }
+        if (area() < minArea) return null
+        // Reject fully twisted quads (both horizontal edges inverted, or the
+        // whole quad vertically flipped). Mild skew stays allowed.
+        if (pts[0].x >= pts[1].x && pts[3].x >= pts[2].x) return null
+        if (pts[0].y >= pts[3].y && pts[1].y >= pts[2].y) return null
+        return this
+    }
+
     companion object {
         /** Orders four arbitrary points into TL/TR/BR/BL. */
         fun ordered(points: List<Pt>): QuadF? {

@@ -4,6 +4,36 @@ All notable changes to LocalScanner are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-11-14
+
+The perspective-shift release: manual perspective editing like CamScanner,
+live filter editing, and direct image viewing from the document grid.
+
+### Added
+
+- **Perspective shift (CamScanner-style crop editor)**: the crop screen now
+  has four draggable corner handles plus four draggable edge handles that
+  slide a whole side along its normal, a magnifier loupe that follows the
+  dragged handle for pixel-accurate placement, haptic feedback on grab, and
+  geometry guards that reject moves which would twist or collapse the quad
+  (unit-tested). The confirmed quad is perspective-warped
+  (`warpPerspective`) into a straightened page as before.
+- **Live effects editing**: filter (Original / Magic Color / Grayscale /
+  Black & White) and brightness/contrast changes now re-render the preview
+  immediately while the sliders move (debounced 220 ms) — no more "switch
+  page to see the change". A horizontal thumbnail strip previews every
+  filter on the current page at a glance, pressing and holding the image
+  shows the untouched original for before/after comparison, and "Reset
+  tone" restores neutral brightness/contrast.
+- **View pages directly from the grid**: tapping a page card on the document
+  screen now opens the page viewer straight at that page (long-press keeps
+  the quick menu). The page viewer gained pinch-to-zoom and double-tap zoom
+  (swiping is suspended while zoomed so pans stay inside the page) and a
+  page-management bar — move up / move down / rotate / delete — under the
+  OCR controls; rotated pages reload with the correct new aspect.
+- Filter edits are committed per page live (previously they were only
+  applied when paging back and forth).
+
 ## [1.0.2] - 2026-11-13
 
 ### Fixed

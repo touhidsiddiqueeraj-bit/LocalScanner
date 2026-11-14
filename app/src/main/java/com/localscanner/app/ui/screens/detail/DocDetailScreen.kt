@@ -1,5 +1,7 @@
 package com.localscanner.app.ui.screens.detail
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -63,11 +65,12 @@ fun DocDetailScreen(
     onExportPdf: () -> Unit,
     onOpenViewer: () -> Unit,
     onAddPages: () -> Unit,
+    onViewPage: (Int) -> Unit = {},
 ) {
     val app = androidx.compose.ui.platform.LocalContext.current.applicationContext as android.app.Application
     val vm: DocDetailViewModel = viewModel(
         key = docId,
-        factory = viewModelFactory(app, docId),
+        factory = docDetailViewModelFactory(app, docId),
     )
 
     val doc by vm.doc.collectAsState()
@@ -140,7 +143,13 @@ fun DocDetailScreen(
                 modifier = Modifier.fillMaxSize(),
             ) {
                 items(pages, key = { it.id }) { page ->
-                    PageCard(page = page, onClick = { pageMenuFor = page })
+                    PageCard(
+                        page = page,
+                        // Tap: view the image full-screen (CamScanner behaviour).
+                        onClick = { onViewPage(page.pageIndex) },
+                        // Long-press: quick actions without leaving the grid.
+                        onLongClick = { pageMenuFor = page },
+                    )
                 }
             }
         }
@@ -186,9 +195,16 @@ fun DocDetailScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun PageCard(page: PageEntity, onClick: () -> Unit) {
-    Card(onClick = onClick) {
+private fun PageCard(
+    page: PageEntity,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick),
+    ) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             AsyncImage(
                 model = File(page.thumbPath),
@@ -256,11 +272,3 @@ private fun PageMenuDialog(
         },
     )
 }
-
-private fun viewModelFactory(app: android.app.Application, docId: String): ViewModelProvider.Factory =
-    object : ViewModelProvider.Factory {
-        @Suppress("UNCHECKED_CAST")
-        override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T {
-            return DocDetailViewModel(app, docId) as T
-        }
-    }

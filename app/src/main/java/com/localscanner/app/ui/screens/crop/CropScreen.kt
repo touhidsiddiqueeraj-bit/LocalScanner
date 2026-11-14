@@ -33,19 +33,33 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.localscanner.app.ui.theme.ScanOverlayColor
 import kotlin.math.hypot
+import kotlin.math.roundToInt
 
+/**
+ * CamScanner-style crop editor ("perspective shift"):
+ *  - four draggable corner handles,
+ *  - four draggable edge handles that slide a whole side,
+ *  - a magnifier loupe that follows the dragged handle for pixel-accurate
+ *    placement,
+ *  - the confirmed quad is perspective-warped into a straightened page.
+ */
 @Composable
 fun CropScreen(
     onDone: () -> Unit,
@@ -56,7 +70,10 @@ fun CropScreen(
     val bitmap = vm.bitmap
     val quad = vm.quad
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
-    var activeCorner by remember { mutableStateOf(-1) }
+    // -1 = none; 0..3 = corner; 100+e = edge e
+    var activeHandle by remember { mutableStateOf(-1) }
+    var dragOffset by remember { mutableStateOf(Offset.Zero) }
+    val haptics = LocalHapticFeedback.current
 
     // CamScanner-style auto-crop: when a confident quad was detected, apply it
     // automatically after a beat. Any touch on the quad cancels the timer.
@@ -77,9 +94,10 @@ fun CropScreen(
         ) {
             if (bitmap != null && quad != null && canvasSize != IntSize.Zero) {
                 val fit = remember(bitmap, canvasSize) { computeFit(bitmap.width, bitmap.height, canvasSize) }
+                val image = remember(bitmap) { bitmap.asImageBitmap() }
 
                 Image(
-                    bitmap = bitmap.asImageBitmap(),
+                    bitmap = image,
                     contentDescription = "Page to crop",
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxSize(),
@@ -88,35 +106,59 @@ fun CropScreen(
                 Canvas(
                     modifier = Modifier
                         .fillMaxSize()
-                        .pointerInput(bitmap) {
+                        .pointerInput(bitmap, canvasSize) {
                             detectDragGestures(
                                 onDragStart = { touch ->
                                     vm.cancelAutoCrop()
                                     val currentQuad = vm.quad ?: return@detectDragGestures
                                     val corners = currentQuad.points().map { toDisplay(it, fit) }
-                                    activeCorner = corners.indexOfFirst {
-                                        hypot(it.x - touch.x, it.y - touch.y) < 80f
+                                    val edges = (0..3).map { toDisplay(currentQuad.edgeMidpoint(it), fit) }
+                                    val hit = 34.dp.toPx()
+                                    activeHandle = -1
+                                    dragOffset = touch
+                                    // Corners win over edges when both are close.
+                                    val cornerIdx = corners.indices
+                                        .map { i -> i to hypot(corners[i].x - touch.x, corners[i].y - touch.y) }
+                                        .filter { (_, d) -> d < hit }
+                                        .minByOrNull { (_, d) -> d }?.first
+                                    if (cornerIdx != null) {
+                                        activeHandle = cornerIdx
+                                    } else {
+                                        val edgeIdx = edges.indices
+                                            .map { i -> i to hypot(edges[i].x - touch.x, edges[i].y - touch.y) }
+                                            .filter { (_, d) -> d < hit }
+                                            .minByOrNull { (_, d) -> d }?.first
+                                        if (edgeIdx != null) activeHandle = 100 + edgeIdx
                                     }
-                                    if (activeCorner == -1) {
-                                        activeCorner = corners.indices.minByOrNull { i ->
-                                            val c = corners[i]
-                                            hypot(c.x - touch.x, c.y - touch.y)
-                                        } ?: -1
+                                    if (activeHandle != -1) {
+                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                     }
                                 },
                                 onDrag = { change, dragAmount ->
                                     change.consume()
-                                    if (activeCorner >= 0) {
-                                        val ndx = dragAmount.x / fit.width
-                                        val ndy = dragAmount.y / fit.height
-                                        vm.moveCorner(activeCorner, ndx, ndy)
+                                    dragOffset = dragOffset + dragAmount
+                                    when (val h = activeHandle) {
+                                        in 0..3 -> {
+                                            vm.moveCorner(h, dragAmount.x / fit.width, dragAmount.y / fit.height)
+                                        }
+                                        in 100..103 -> {
+                                            vm.moveEdge(h - 100, dragAmount.x / fit.width, dragAmount.y / fit.height)
+                                        }
                                     }
                                 },
-                                onDragEnd = { activeCorner = -1 },
+                                onDragEnd = {
+                                    activeHandle = -1
+                                    dragOffset = Offset.Zero
+                                },
+                                onDragCancel = {
+                                    activeHandle = -1
+                                    dragOffset = Offset.Zero
+                                },
                             )
                         },
                 ) {
                     val pts = quad.points().map { toDisplay(it, fit) }
+                    val edgeMids = (0..3).map { toDisplay(quad.edgeMidpoint(it), fit) }
                     val path = Path().apply {
                         moveTo(pts[0].x, pts[0].y)
                         for (i in 1 until pts.size) lineTo(pts[i].x, pts[i].y)
@@ -133,11 +175,43 @@ fun CropScreen(
                         ScanOverlayColor,
                         style = Stroke(width = 3.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(16f, 10f))),
                     )
-                    pts.forEachIndexed { i, p ->
-                        drawCircle(if (i == activeCorner) Color.White else ScanOverlayColor, 8.dp.toPx(), p)
+
+                    // Edge handles: pill-shaped side grips.
+                    edgeMids.forEachIndexed { i, p ->
+                        val active = activeHandle == 100 + i
+                        drawCircle(
+                            if (active) Color.White else ScanOverlayColor,
+                            radius = if (active) 11.dp.toPx() else 9.dp.toPx(),
+                            center = p,
+                        )
                         drawCircle(Color.White, 3.dp.toPx(), p)
                     }
+                    // Corner handles: larger, with white ring for visibility.
+                    pts.forEachIndexed { i, p ->
+                        val active = activeHandle == i
+                        drawCircle(ScanOverlayColor, radius = if (active) 15.dp.toPx() else 12.dp.toPx(), center = p)
+                        drawCircle(Color.White, 5.dp.toPx(), p)
+                    }
+
+                    // Magnifier loupe following the active handle.
+                    val handlePos = when (val h = activeHandle) {
+                        in 0..3 -> pts[h]
+                        in 100..103 -> edgeMids[h - 100]
+                        else -> Offset.Zero
+                    }
+                    if (activeHandle != -1 && bitmap.width > 0) {
+                        drawLoupe(image, handlePos, fit, size.width, size.height)
+                    }
                 }
+
+                Text(
+                    text = "Drag corners or edges to adjust - the page is straightened on crop",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White.copy(alpha = 0.85f),
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 8.dp),
+                )
             } else if (vm.busy) {
                 Text("Preparing page...")
             }
@@ -236,6 +310,61 @@ fun CropScreen(
             },
         ) { Text(msg) }
     }
+}
+
+/**
+ * Circular magnifier: shows the bitmap region under [handlePos] magnified
+ * relative to the fitted display scale, clamped to stay on screen.
+ */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLoupe(
+    image: ImageBitmap,
+    handlePos: Offset,
+    fit: FitRect,
+    canvasW: Float,
+    canvasH: Float,
+) {
+    val zoom = 2.6f
+    val radius = 52.dp.toPx()
+    val displayScale = fit.width / image.width // display px per bitmap px
+    if (displayScale <= 0f) return
+    val srcRadius = (radius / (displayScale * zoom)).roundToInt().coerceAtLeast(8)
+
+    val bx = ((handlePos.x - fit.x) / displayScale).roundToInt()
+        .coerceIn(srcRadius, (image.width - srcRadius).coerceAtLeast(srcRadius + 1))
+    val by = ((handlePos.y - fit.y) / displayScale).roundToInt()
+        .coerceIn(srcRadius, (image.height - srcRadius).coerceAtLeast(srcRadius + 1))
+
+    // Loupe floats above the finger, clamped inside the canvas.
+    val cx = handlePos.x.coerceIn(radius, (canvasW - radius).coerceAtLeast(radius))
+    val cy = (handlePos.y - radius * 1.6f).coerceIn(radius, (canvasH - radius).coerceAtLeast(radius))
+
+    val circle = Path().apply {
+        addOval(androidx.compose.ui.geometry.Rect(cx - radius, cy - radius, cx + radius, cy + radius))
+    }
+    drawCircle(Color.Black.copy(alpha = 0.35f), radius + 3.dp.toPx(), Offset(cx, cy))
+    clipPath(circle) {
+        drawImage(
+            image = image,
+            srcOffset = IntOffset(bx - srcRadius, by - srcRadius),
+            srcSize = IntSize(srcRadius * 2, srcRadius * 2),
+            dstOffset = IntOffset((cx - radius).roundToInt(), (cy - radius).roundToInt()),
+            dstSize = IntSize((radius * 2).roundToInt(), (radius * 2).roundToInt()),
+        )
+    }
+    drawCircle(Color.White, radius = radius, center = Offset(cx, cy), style = Stroke(width = 2.dp.toPx()))
+    // Crosshair so the exact grab point is visible.
+    drawLine(
+        Color.White.copy(alpha = 0.8f),
+        start = Offset(cx - 10.dp.toPx(), cy),
+        end = Offset(cx + 10.dp.toPx(), cy),
+        strokeWidth = 1.5.dp.toPx(),
+    )
+    drawLine(
+        Color.White.copy(alpha = 0.8f),
+        start = Offset(cx, cy - 10.dp.toPx()),
+        end = Offset(cx, cy + 10.dp.toPx()),
+        strokeWidth = 1.5.dp.toPx(),
+    )
 }
 
 private data class FitRect(val x: Float, val y: Float, val width: Float, val height: Float)

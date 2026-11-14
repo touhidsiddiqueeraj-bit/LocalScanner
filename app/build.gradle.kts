@@ -6,7 +6,7 @@ plugins {
 }
 
 // Release version can be overridden from CI (tag name, e.g. -PappVersion=1.2.0)
-val appVersionName = (project.findProperty("appVersion") as String?) ?: "1.0.2"
+val appVersionName = (project.findProperty("appVersion") as String?) ?: "1.1.0"
 val ciRun = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
 
 android {
@@ -155,9 +155,23 @@ tasks.withType<Test>().configureEach {
     // Robolectric 4.13's MavenDependencyResolver honours maven.repo.local
     // (maven repository layout); keep the legacy cache-dir property too for
     // older resolver paths.
-    System.getenv("ROBOLECTRIC_CACHE_DIR")?.let {
-        systemProperty("robolectric.dependency.cache.dir", it)
-        systemProperty("maven.repo.local", it)
+    System.getenv("ROBOLECTRIC_CACHE_DIR")?.let { cache ->
+        systemProperty("robolectric.dependency.cache.dir", cache)
+        systemProperty("maven.repo.local", cache)
+        // Fully offline when the cache holds the android-all jar: Maven Central
+        // rate-limits (HTTP 429) the sha1 re-verification requests Robolectric
+        // makes on every run. Offline mode wants a flat dir with the jar inside,
+        // e.g. <cache>/org/robolectric/android-all-instrumented/<ver>/.
+        val verDirs = File("$cache/org/robolectric/android-all-instrumented")
+            .listFiles()?.filter { it.isDirectory }.orEmpty()
+        val verJar = verDirs.mapNotNull { v ->
+            val j = File(v.absolutePath + "/android-all-instrumented-" + v.name + ".jar")
+            if (j.exists()) j else null
+        }.maxByOrNull { it.name }
+        if (verJar != null) {
+            systemProperty("robolectric.offline", "true")
+            systemProperty("robolectric.dependency.dir", verJar.parent)
+        }
     }
     // Optional Maven mirror for android-all artifacts (e.g. when Maven Central
     // rate-limits: ROBOLECTRIC_MAVEN_URL=https://maven.aliyun.com/repository/public).

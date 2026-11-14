@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Icon
@@ -48,10 +49,10 @@ import com.localscanner.app.ui.screens.crop.CropViewModel
 import com.localscanner.app.ui.screens.detail.DocDetailScreen
 import com.localscanner.app.ui.screens.filter.FilterScreen
 import com.localscanner.app.ui.screens.filter.FilterViewModel
+import com.localscanner.app.ui.screens.viewer.PageViewerScreen
 import com.localscanner.app.ui.screens.home.HomeScreen
 import com.localscanner.app.ui.screens.pdf.PdfExportScreen
 import com.localscanner.app.ui.screens.settings.SettingsScreen
-import com.localscanner.app.ui.screens.viewer.PageViewerScreen
 import com.localscanner.app.ui.theme.LocalScannerTheme
 import com.localscanner.app.ui.theme.ScanOverlayColor
 import kotlinx.coroutines.runBlocking
@@ -217,8 +218,18 @@ class AppScreenshots {
     @Test
     fun viewerScreen() {
         val docId = seedLibrary()
-        light { PageViewerScreen(docId, onBack = {}) }
-        waitForText("Page 1 of 2")
+        // Opens directly on the tapped page (grid card view action).
+        light { PageViewerScreen(docId, initialPage = 1, onBack = {}) }
+        // Poll for the page counter instead of waitUntil: the pager jump keeps
+        // the compose idler busy on JVM runners, timing out a satisfied state.
+        var found = false
+        repeat(40) {
+            if (!found) {
+                found = compose.onAllNodesWithText("Page 2 of 2", substring = true)
+                    .fetchSemanticsNodes().isNotEmpty()
+                if (!found) Thread.sleep(250)
+            }
+        }
         capture("viewer", settleMs = 3_000)
     }
 
@@ -321,7 +332,7 @@ private fun CaptureShotSim(pages: Int, batchMode: Boolean) {
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             IconButton(onClick = {}) {
-                Icon(Icons.Filled.FlashOn, contentDescription = "Flash", tint = Color.White)
+                Icon(Icons.Filled.FlashOff, contentDescription = "Flash", tint = Color.White)
             }
         }
 

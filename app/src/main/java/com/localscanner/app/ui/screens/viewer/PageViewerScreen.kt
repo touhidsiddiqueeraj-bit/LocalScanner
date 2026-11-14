@@ -4,6 +4,9 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,10 +25,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CopyAll
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.outlined.RotateRight
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.TextFields
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -55,6 +63,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
@@ -67,6 +77,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.localscanner.app.data.db.PageEntity
 import com.localscanner.app.ui.theme.ScanOverlayColor
 import com.localscanner.app.util.ShareUtils
@@ -81,6 +92,7 @@ import java.io.File
 @Composable
 fun PageViewerScreen(
     docId: String,
+    initialPage: Int = 0,
     onBack: () -> Unit,
 ) {
     val app = LocalContext.current.applicationContext as android.app.Application
@@ -97,6 +109,7 @@ fun PageViewerScreen(
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     var showTextSheet by remember { mutableStateOf(false) }
+    var pendingDelete by remember { mutableStateOf<PageEntity?>(null) }
 
     LaunchedEffect(pages.size) {
         pages.getOrNull(vm.pageIndex)?.let { vm.ensureAspect(it) }
@@ -150,7 +163,7 @@ fun PageViewerScreen(
                 } else if (vm.searchActive && vm.resultsVisible) {
                     SearchResults(vm = vm)
                 } else {
-                    PagesPager(vm = vm, pages = pages)
+                    PagesPager(vm = vm, pages = pages, initialPage = initialPage, onPendingDelete = { pendingDelete = it })
                 }
 
                 // Selection bar: the tapped line's text with a copy action.
@@ -182,7 +195,7 @@ fun PageViewerScreen(
                 }
             }
 
-            ViewerBottomBar(vm = vm, pageCount = pages.size)
+            ViewerBottomBar(vm = vm, pages = pages, onPendingDelete = { pendingDelete = it })
         }
     }
 
@@ -235,6 +248,23 @@ fun PageViewerScreen(
             modifier = Modifier.padding(16.dp),
             action = { TextButton(onClick = { vm.dismissError() }) { Text("OK") } },
         ) { Text(err) }
+    }
+
+    pendingDelete?.let { page ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("Delete page?") },
+            text = { Text("Page ${vm.pageIndex + 1} will be removed from this document.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingDelete = null
+                    vm.deleteCurrentPage()
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) { Text("Cancel") }
+            },
+        )
     }
 }
 
@@ -296,11 +326,23 @@ private fun SearchResults(vm: PageViewerViewModel) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun PagesPager(vm: PageViewerViewModel, pages: List<PageEntity>) {
+private fun PagesPager(
+    vm: PageViewerViewModel,
+    pages: List<PageEntity>,
+    initialPage: Int,
+    onPendingDelete: (PageEntity) -> Unit,
+) {
     val pagerState = rememberPagerState(pageCount = { pages.size })
 
     // VM drives the pager (search jumps), pager drives the VM (swipes).
-    LaunchedEffect(pagerState) {
+    LaunchedEffect(pagerState, pages.size) {
+        // Open directly on the tapped page before the flow collection starts,
+        // otherwise the first emission would reset the page back to 0.
+        if (initialPage > 0 && pages.isNotEmpty()) {
+            val target = initialPage.coerceIn(0, pages.size - 1)
+            pagerState.scrollToPage(target)
+            vm.pageIndex = target
+        }
         snapshotFlow { pagerState.currentPage }.collect { page ->
             if (page != vm.pageIndex) {
                 vm.pageIndex = page
@@ -315,72 +357,136 @@ private fun PagesPager(vm: PageViewerViewModel, pages: List<PageEntity>) {
         }
     }
 
-    HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { i ->
+    // While a page is zoomed in, swiping must pan the page, not the pager.
+    var zoomActive by remember { mutableStateOf(false) }
+
+    HorizontalPager(
+        state = pagerState,
+        userScrollEnabled = !zoomActive,
+        modifier = Modifier.fillMaxSize(),
+    ) { i ->
         val page = pages[i]
         var canvasSize by remember { mutableStateOf(IntSize.Zero) }
+        var scale by remember(page.id) { mutableStateOf(1f) }
+        var offset by remember(page.id) { mutableStateOf(Offset.Zero) }
+
+        // Reset zoom when navigating to another page.
+        LaunchedEffect(vm.pageIndex) {
+            scale = 1f
+            offset = Offset.Zero
+        }
+        LaunchedEffect(scale) { zoomActive = scale > 1.01f }
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .onSizeChanged { canvasSize = it },
-        ) {
-            AsyncImage(
-                model = File(page.filePath),
-                contentDescription = "Page ${page.pageIndex + 1}",
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize(),
-            )
-
-            val lines = vm.linesFor(page)
-            val aspect = vm.pageAspects[page.id]
-            if (lines != null && aspect != null && canvasSize != IntSize.Zero) {
-                val fit = remember(aspect, canvasSize) { computeFit(aspect, canvasSize) }
-                val query = vm.query.trim()
-                val selected = if (page.id == pages.getOrNull(vm.pageIndex)?.id) vm.selectedLineIndex else null
-
-                Canvas(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(page.id, lines.size, query) {
-                            detectTapGestures { tap ->
-                                val nx = (tap.x - fit.x) / fit.width
-                                val ny = (tap.y - fit.y) / fit.height
-                                val slop = 0.008f
-                                val idx = lines.indices.firstOrNull { k ->
-                                    val b = lines[k].second
-                                    nx >= b.x - slop && nx <= b.right + slop &&
-                                        ny >= b.y - slop && ny <= b.bottom + slop
-                                }
-                                if (idx != null) vm.selectLine(lines, idx) else vm.clearSelection()
+                .onSizeChanged { canvasSize = it }
+                .clipToBounds()
+                .pointerInput(page.id) {
+                    detectTapGestures(
+                        onDoubleTap = { tap ->
+                            if (scale > 1f) {
+                                scale = 1f
+                                offset = Offset.Zero
+                            } else {
+                                scale = 2.5f
+                                offset = Offset(
+                                    (size.width / 2f - tap.x) * 1.5f,
+                                    (size.height / 2f - tap.y) * 1.5f,
+                                )
                             }
                         },
-                ) {
-                    // Search hits: yellow outlines directly on the image.
-                    if (vm.searchActive && query.isNotBlank()) {
-                        lines.forEach { (line, b) ->
-                            if (line.text.contains(query, ignoreCase = true)) {
+                    )
+                }
+                .pointerInput(page.id) {
+                    detectTransformGestures { _, pan, zoom, _ ->
+                        val newScale = (scale * zoom).coerceIn(1f, 5f)
+                        scale = newScale
+                        offset = if (newScale <= 1f) Offset.Zero else offset + pan
+                    }
+                },
+        ) {
+            // Zoomed content: image + on-image OCR overlay scale together.
+            // Pointer positions inside are inverse-transformed, so the tap
+            // mapping below keeps working at any zoom level.
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                        translationX = offset.x
+                        translationY = offset.y
+                    },
+            ) {
+                val request = ImageRequest.Builder(LocalContext.current)
+                    .data(File(page.filePath))
+                    .memoryCacheKey("${page.filePath}#${vm.imageRevision}")
+                    .crossfade(false)
+                    .build()
+                AsyncImage(
+                    model = request,
+                    contentDescription = "Page ${page.pageIndex + 1}",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize(),
+                )
+
+                val lines = vm.linesFor(page)
+                val aspect = vm.pageAspects[page.id]
+                if (lines != null && aspect != null && canvasSize != IntSize.Zero) {
+                    val fit = remember(aspect, canvasSize) { computeFit(aspect, canvasSize) }
+                    val query = vm.query.trim()
+                    val selected = if (page.id == pages.getOrNull(vm.pageIndex)?.id) vm.selectedLineIndex else null
+
+                    Canvas(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .pointerInput(page.id, lines.size, query) {
+                                detectTapGestures { tap ->
+                                    if (scale > 1.01f) {
+                                        vm.clearSelection()
+                                        return@detectTapGestures
+                                    }
+                                    val nx = (tap.x - fit.x) / fit.width
+                                    val ny = (tap.y - fit.y) / fit.height
+                                    val slop = 0.008f
+                                    val idx = lines.indices.firstOrNull { k ->
+                                        val b = lines[k].second
+                                        nx >= b.x - slop && nx <= b.right + slop &&
+                                            ny >= b.y - slop && ny <= b.bottom + slop
+                                    }
+                                    if (idx != null) vm.selectLine(lines, idx) else vm.clearSelection()
+                                }
+                            },
+                    ) {
+                        // Search hits: yellow outlines directly on the image.
+                        if (vm.searchActive && query.isNotBlank()) {
+                            lines.forEach { (line, b) ->
+                                if (line.text.contains(query, ignoreCase = true)) {
+                                    drawRect(
+                                        Color(0xFFFFC107),
+                                        topLeft = Offset(fit.x + b.x * fit.width, fit.y + b.y * fit.height),
+                                        size = androidx.compose.ui.geometry.Size(b.w * fit.width, b.h * fit.height),
+                                        style = Stroke(width = 2.dp.toPx()),
+                                    )
+                                }
+                            }
+                        }
+                        // Selected line: filled accent box.
+                        selected?.let { si ->
+                            lines.getOrNull(si)?.let { (_, b) ->
                                 drawRect(
-                                    Color(0xFFFFC107),
+                                    ScanOverlayColor.copy(alpha = 0.30f),
+                                    topLeft = Offset(fit.x + b.x * fit.width, fit.y + b.y * fit.height),
+                                    size = androidx.compose.ui.geometry.Size(b.w * fit.width, b.h * fit.height),
+                                )
+                                drawRect(
+                                    ScanOverlayColor,
                                     topLeft = Offset(fit.x + b.x * fit.width, fit.y + b.y * fit.height),
                                     size = androidx.compose.ui.geometry.Size(b.w * fit.width, b.h * fit.height),
                                     style = Stroke(width = 2.dp.toPx()),
                                 )
                             }
-                        }
-                    }
-                    // Selected line: filled accent box.
-                    selected?.let { si ->
-                        lines.getOrNull(si)?.let { (_, b) ->
-                            drawRect(
-                                ScanOverlayColor.copy(alpha = 0.30f),
-                                topLeft = Offset(fit.x + b.x * fit.width, fit.y + b.y * fit.height),
-                                size = androidx.compose.ui.geometry.Size(b.w * fit.width, b.h * fit.height),
-                            )
-                            drawRect(
-                                ScanOverlayColor,
-                                topLeft = Offset(fit.x + b.x * fit.width, fit.y + b.y * fit.height),
-                                size = androidx.compose.ui.geometry.Size(b.w * fit.width, b.h * fit.height),
-                                style = Stroke(width = 2.dp.toPx()),
-                            )
                         }
                     }
                 }
@@ -417,7 +523,12 @@ private fun PagesPager(vm: PageViewerViewModel, pages: List<PageEntity>) {
 }
 
 @Composable
-private fun ViewerBottomBar(vm: PageViewerViewModel, pageCount: Int) {
+private fun ViewerBottomBar(
+    vm: PageViewerViewModel,
+    pages: List<PageEntity>,
+    onPendingDelete: (PageEntity) -> Unit,
+) {
+    val pageCount = pages.size
     Column(modifier = Modifier.fillMaxWidth()) {
         if (vm.running && vm.runAllProgress != null && pageCount > 0) {
             LinearProgressIndicator(
@@ -432,17 +543,52 @@ private fun ViewerBottomBar(vm: PageViewerViewModel, pageCount: Int) {
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
         }
+
+        // Page management: reorder, rotate, delete (CamScanner viewer bar).
+        if (pageCount > 0) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                IconButton(
+                    onClick = { vm.moveCurrentPage(-1) },
+                    enabled = vm.pageIndex > 0,
+                ) {
+                    Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Move page up")
+                }
+                IconButton(
+                    onClick = { vm.moveCurrentPage(1) },
+                    enabled = vm.pageIndex < pageCount - 1,
+                ) {
+                    Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Move page down")
+                }
+                IconButton(onClick = { vm.rotateCurrentPage() }) {
+                    Icon(Icons.Outlined.RotateRight, contentDescription = "Rotate page")
+                }
+                IconButton(
+                    onClick = { pages.getOrNull(vm.pageIndex)?.let(onPendingDelete) },
+                ) {
+                    Icon(Icons.Filled.Delete, contentDescription = "Delete page")
+                }
+                Text(
+                    text = "Page ${vm.pageIndex + 1} of $pageCount",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 8.dp),
+                )
+            }
+        }
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = if (pageCount > 0) "Page ${vm.pageIndex + 1} of $pageCount" else "No pages",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.weight(1f),
-            )
             AssistChip(
                 onClick = { vm.cycleEngine() },
                 label = {

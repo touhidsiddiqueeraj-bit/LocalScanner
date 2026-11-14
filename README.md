@@ -40,9 +40,11 @@ reconstruction using the real edge-overlay component (runners have no camera).
 | --- | --- |
 | Auto edge detection while framing | Five-source OpenCV detector (paper-flattening Canny, Otsu Canny, Otsu bright-blob quads, HSV paper-mask blobs, flood around structural-edge barriers) with convex-hull + `approxPolyDP` corner extraction (curled-corner recovery), strict quad validation and likelihood scoring; live overlay on the CameraX preview, gradient edge-snap refinement on stills |
 | Single & batch shooting modes | CamScanner-style mode pills in the camera UI; Single auto-crops the page and jumps straight to enhancement, Batch keeps snapping pages for a combined review |
-| Manual corner adjustment ("smart crop") | Draggable corner handles with dimmed background mask; auto-crop applies the detected quad automatically and an "Auto-crop all" action processes every remaining page |
+| Manual perspective shift ("smart crop") | Draggable corner **and edge** handles with dimmed mask + magnifier loupe and degenerate-move guards; auto-crop applies the detected quad automatically and an "Auto-crop all" action processes every remaining page |
 | Perspective correction / de-skew | OpenCV `getPerspectiveTransform` + `warpPerspective` at up to 2048px |
 | Magic Color / shadow removal | Illumination-normalization (background division) + CLAHE local contrast + saturation boost |
+| Live filter editing | Per-filter thumbnail strip, real-time preview while sliders move, press-and-hold before/after compare, "Reset tone" |
+| Live filter editing | Filter strip with per-filter thumbnails, real-time preview while sliders move, press-and-hold before/after compare |
 | Grayscale & Black & White modes | Adaptive-threshold B&W with auto block size, classic grayscale |
 | Brightness / contrast tuning | Per-page sliders applied on top of any filter |
 | Multi-page batch scanning | One session, N pages, append pages to existing documents |
@@ -56,6 +58,8 @@ reconstruction using the real edge-overlay component (runners have no camera).
 | PDF compression | High / Medium / Small quality presets |
 | No watermark | CamScanner free tier stamps "Created by CamScanner" on exports — LocalScanner never does |
 | Document management | Documents with cover thumbnails, folders, rename, delete, page reorder/rotate/delete |
+| View scanned pages directly | Tap a page card to open it full-screen in the page viewer (swipe pager, pinch & double-tap zoom, rotate/delete/reorder in-place) — no PDF export needed |
+| View scanned pages directly | Full-screen image viewer (swipeable pager, pinch & double-tap zoom) — no PDF export needed |
 | Print | Android print framework (PDF) |
 | Dark mode | Material You theme with system/light/dark override |
 | Cloud sync, fax, e-sign, AI extras | Intentionally **not** replicated — they are cloud services, not local scanning |

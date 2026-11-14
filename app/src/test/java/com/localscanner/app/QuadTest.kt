@@ -173,4 +173,66 @@ class QuadTest {
         val b = LineF(0f, 5f, 1f, 0f)
         assertNull(a.intersect(b))
     }
+
+    // ---- perspective shift geometry (crop editor) -----------------------
+
+    @Test
+    fun `edge midpoint is centred on the edge`() {
+        val q = QuadF.fullFrame()
+        assertEquals(Pt(0.5f, 0f), q.edgeMidpoint(0)) // top edge
+        assertEquals(Pt(1f, 0.5f), q.edgeMidpoint(1)) // right edge
+        assertEquals(Pt(0.5f, 1f), q.edgeMidpoint(2)) // bottom edge
+        assertEquals(Pt(0f, 0.5f), q.edgeMidpoint(3)) // left edge
+    }
+
+    @Test
+    fun `top edge drag moves only the top corners`() {
+        val q = QuadF.fullFrame()
+        val moved = q.movedEdge(0, dx = 0f, dy = 0.1f)!!
+        assertEquals(Pt(0f, 0.1f), moved.tl)
+        assertEquals(Pt(1f, 0.1f), moved.tr)
+        assertEquals(q.br, moved.br)
+        assertEquals(q.bl, moved.bl)
+    }
+
+    @Test
+    fun `bottom edge drag moves only the bottom corners`() {
+        val q = QuadF.fullFrame()
+        val moved = q.movedEdge(2, dx = 0f, dy = -0.1f)!!
+        assertEquals(q.tl, moved.tl)
+        assertEquals(q.tr, moved.tr)
+        assertEquals(Pt(1f, 0.9f), moved.br)
+        assertEquals(Pt(0f, 0.9f), moved.bl)
+    }
+
+    @Test
+    fun `edge drag is projected onto the edge normal`() {
+        // Dragging along the top edge (x direction) must not move it: the
+        // perpendicular component of a horizontal drag on a horizontal edge
+        // is zero.
+        val q = QuadF.fullFrame()
+        val moved = q.movedEdge(0, dx = 0.3f, dy = 0f)!!
+        assertEquals(q.tl.y, moved.tl.y, 1e-4f)
+        assertEquals(q.tr.y, moved.tr.y, 1e-4f)
+    }
+
+    @Test
+    fun `edge drag that inverts the quad is rejected`() {
+        // Slammed down past the bottom edge: quad would collapse.
+        val q = QuadF.fullFrame()
+        assertNull(q.movedEdge(0, dx = 0f, dy = 1.5f))
+    }
+
+    @Test
+    fun `corner drag out of bounds is rejected`() {
+        val q = QuadF.fullFrame()
+        assertNull(q.movedCorner(0, dx = -0.5f, dy = -0.5f))
+    }
+
+    @Test
+    fun `valid corner drag is accepted`() {
+        val q = QuadF.fullFrame()
+        val moved = q.movedCorner(0, dx = 0.05f, dy = 0.05f)!!
+        assertEquals(Pt(0.05f, 0.05f), moved.tl)
+    }
 }

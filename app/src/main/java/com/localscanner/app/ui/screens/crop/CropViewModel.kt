@@ -267,16 +267,19 @@ class CropViewModel(app: Application) : AndroidViewModel(app) {
         quadSource = QuadSource.FULL
     }
 
-    /** Moves a corner (0..3: tl, tr, br, bl) by a normalized delta. */
+    /** Moves a corner (0..3: tl, tr, br, bl) by a normalized delta.
+     *  Guards against collapsing or twisting the quad (perspective shift). */
     fun moveCorner(corner: Int, dx: Float, dy: Float) {
-        val current = quad ?: return
-        fun mv(p: Pt): Pt = Pt((p.x + dx).coerceIn(0f, 1f), (p.y + dy).coerceIn(0f, 1f))
-        quad = when (corner) {
-            0 -> current.copy(tl = mv(current.tl))
-            1 -> current.copy(tr = mv(current.tr))
-            2 -> current.copy(br = mv(current.br))
-            else -> current.copy(bl = mv(current.bl))
-        }
+        quad = quad?.movedCorner(corner, dx, dy) ?: return
+    }
+
+    /**
+     * CamScanner-style edge drag (0..3: top, right, bottom, left): the two
+     * corners of the edge translate along the edge normal. Rejected moves
+     * (inverted / collapsed quad) keep the previous quad.
+     */
+    fun moveEdge(edge: Int, dx: Float, dy: Float) {
+        quad = quad?.movedEdge(edge, dx, dy) ?: return
     }
 
     fun dismissError() {

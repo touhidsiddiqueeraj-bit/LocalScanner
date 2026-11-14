@@ -24,12 +24,12 @@ object Routes {
     const val FILTER = "filter"
     const val DOC = "doc/{docId}"
     const val PDF = "pdf/{docId}"
-    const val VIEWER = "viewer/{docId}"
+    const val VIEWER = "viewer/{docId}?page={page}"
     const val SETTINGS = "settings"
 
     fun doc(docId: String) = "doc/$docId"
     fun pdf(docId: String) = "pdf/$docId"
-    fun viewer(docId: String) = "viewer/$docId"
+    fun viewer(docId: String, page: Int = 0) = "viewer/$docId?page=$page"
 }
 
 @Composable
@@ -78,6 +78,26 @@ fun AppNavGraph(container: AppContainer) {
                 onExportPdf = { nav.navigate(Routes.pdf(docId)) },
                 onOpenViewer = { nav.navigate(Routes.viewer(docId)) },
                 onAddPages = { nav.navigate(Routes.CAPTURE) },
+                onViewPage = { page -> nav.navigate(Routes.viewer(docId, page)) },
+            )
+        }
+
+        composable(
+            Routes.VIEWER,
+            arguments = listOf(
+                navArgument("docId") { type = NavType.StringType },
+                navArgument("page") {
+                    type = NavType.IntType
+                    defaultValue = 0
+                },
+            ),
+        ) { entry ->
+            val docId = entry.arguments?.getString("docId") ?: return@composable
+            val page = entry.arguments?.getInt("page") ?: 0
+            PageViewerScreen(
+                docId = docId,
+                initialPage = page,
+                onBack = { nav.popBackStack() },
             )
         }
 
@@ -87,17 +107,6 @@ fun AppNavGraph(container: AppContainer) {
         ) { entry ->
             val docId = entry.arguments?.getString("docId") ?: return@composable
             PdfExportScreen(
-                docId = docId,
-                onBack = { nav.popBackStack() },
-            )
-        }
-
-        composable(
-            Routes.VIEWER,
-            arguments = listOf(navArgument("docId") { type = NavType.StringType }),
-        ) { entry ->
-            val docId = entry.arguments?.getString("docId") ?: return@composable
-            PageViewerScreen(
                 docId = docId,
                 onBack = { nav.popBackStack() },
             )

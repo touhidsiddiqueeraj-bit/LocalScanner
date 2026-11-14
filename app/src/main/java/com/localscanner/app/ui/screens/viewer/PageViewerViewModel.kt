@@ -64,6 +64,10 @@ class PageViewerViewModel(
     /** aspect (w/h) cache per page id, for the on-image text overlay mapping. */
     val pageAspects = mutableStateMapOf<String, Float>()
 
+    /** Bumped after rotate/delete so image loads re-read the changed file. */
+    var imageRevision: Int by mutableStateOf(0)
+        private set
+
     private var exportedTxt: File? = null
 
     data class SearchHit(val pageIndex: Int, val pageLabel: Int, val text: String)
@@ -216,6 +220,39 @@ class PageViewerViewModel(
         } catch (t: Throwable) {
             null
         }
+    }
+
+    // ---- page management (CamScanner viewer bottom bar) ------------------
+
+    fun rotateCurrentPage() {
+        val page = pages.value.getOrNull(pageIndex) ?: return
+        viewModelScope.launch {
+            if (repo.rotatePage(page)) {
+                invalidateAspect(page.id)
+                imageRevision++
+            }
+        }
+    }
+
+    fun deleteCurrentPage() {
+        val page = pages.value.getOrNull(pageIndex) ?: return
+        viewModelScope.launch {
+            repo.deletePage(page)
+            imageRevision++
+        }
+    }
+
+    fun moveCurrentPage(delta: Int) {
+        val page = pages.value.getOrNull(pageIndex) ?: return
+        viewModelScope.launch {
+            repo.movePage(page, delta)
+            imageRevision++
+        }
+    }
+
+    /** Drops the cached aspect for a page (after rotation its aspect changed). */
+    fun invalidateAspect(pageId: String) {
+        pageAspects.remove(pageId)
     }
 
     fun dismissError() {
